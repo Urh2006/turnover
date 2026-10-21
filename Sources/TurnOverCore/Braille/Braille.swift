@@ -372,7 +372,8 @@ public enum Braille {
             source = .object(obj)
             let own = brailleText(Speech.objectPropertiesSpeech(obj, reason: .focus))
             let context = focusContext(focus: focus, item: obj)
-            text = context.isEmpty ? own : context + " " + own
+            // (Line breaks and placeholders in a name or the context as blank cells, as in text, one for one.)
+            text = displayed(context.isEmpty ? own : context + " " + own)
             cursor = nil; selection = nil
             layout()
             let ownStart = (text as NSString).length - (own as NSString).length
@@ -381,14 +382,23 @@ public enum Braille {
             let objectChanged = !(lastObject?.isSameElement(as: obj) ?? false) || own != lastObjectText
             // Two containers can read alike ("lst" and "lst"): the change is in the elements as well as the words.
             let contextChanged = context != lastContextText || !sameElements(contextElements, lastContextElements)
-            if objectChanged || contextChanged || !wasShowingObject {
+            // The focus context setting changed on the same item: placed again under the new setting.
+            let modeChanged = config.braille.focusContext != lastContextMode
+            if objectChanged || contextChanged || modeChanged || !wasShowingObject {
                 let n = display?.cellCount ?? 40
                 let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && contextChanged)
                 // Filling the display: as much context as fits in front of the item, the item whole at the end.
                 objectAnchor = fill && cells.count - objectStartCell <= n ? max(0, cells.count - n) : objectStartCell
+                // With words kept whole, the filled display starts at a word, not inside one.
+                if config.braille.wordWrap, objectAnchor > 0, objectAnchor < objectStartCell,
+                   cells[objectAnchor - 1] & 0x3F != 0, cells[objectAnchor] & 0x3F != 0,
+                   let space = (objectAnchor..<objectStartCell).first(where: { cells[$0] & 0x3F == 0 }) {
+                    objectAnchor = space + 1
+                }
                 windowStart = objectAnchor
             }
             lastObject = obj; lastObjectText = own; lastContextText = context; lastContextElements = contextElements
+            lastContextMode = config.braille.focusContext
             windows = windowStarts(from: objectAnchor)
             if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
         } else {
@@ -409,6 +419,7 @@ public enum Braille {
     private static var lastObject: TurnOverObject?
     private static var lastObjectText = ""
     private static var lastContextText = ""
+    private static var lastContextMode = ""
     /// The ancestors the context was last read from. Its words are read fresh each time: a dialog keeps its element
     /// when its title changes, and a list its element when its name or position does.
     private static var contextElements: [AXUIElement] = []
@@ -481,6 +492,13 @@ public enum Braille {
         }
         lastWritten = window
         d.write(window)
+    }
+
+    /// A new blink rate takes effect at once: a running timer kept the old one (code review, 21 Oct 2026).
+    public static func blinkRateChanged() {
+        guard let t = blinkTimer else { return }
+        t.invalidate(); blinkTimer = nil
+        updateBlink()
     }
 
     /// The cursor blinks while it is in view (NVDA: cursor blink rate).

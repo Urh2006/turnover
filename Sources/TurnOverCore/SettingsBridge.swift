@@ -88,6 +88,7 @@ public enum SettingsBridge {
                 Log.warning("settings app: a change TurnOver couldn't read; nothing changed"); sendState(); return
             }
             let bluetoothWas = config.braille.bluetooth, autoScrollWas = config.braille.autoScrollSeconds, messagesWere = config.braille.showMessages
+            let blinkWas = config.braille.blinkRateMs
             config = next
             config.save()
             SettingsProfiles.applyLive()
@@ -96,6 +97,7 @@ public enum SettingsBridge {
             // As the menu's toggle does: look for the paired display now, not only when no display is in use.
             if config.braille.bluetooth, !bluetoothWas { BrailleDisplays.shared.lookNow() }
             if config.braille.autoScrollSeconds != autoScrollWas { Braille.autoScrollIntervalChanged() }
+            if config.braille.blinkRateMs != blinkWas { Braille.blinkRateChanged() }
             if config.braille.showMessages == "off", messagesWere != "off" { Braille.dropHeldMessage(); Braille.refreshSoon() }
             Log.info("settings app: \(filePatch.keys.sorted().joined(separator: ", ")) changed")
         }

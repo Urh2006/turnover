@@ -865,7 +865,7 @@ public final class TurnOverMenu {
             MenuItem("Cursor", .submenu { [
                 MenuItem("Show the cursor", .toggle(get: { config.braille.showCursor }, set: { config.braille.showCursor = $0; Braille.refreshSoon() })),
                 MenuItem("Blink", .toggle(get: { config.braille.blinkCursor }, set: { config.braille.blinkCursor = $0; Braille.refreshSoon() })),
-                MenuItem("Blink rate", .number(get: { Double(config.braille.blinkRateMs) }, set: { config.braille.blinkRateMs = Int($0) },
+                MenuItem("Blink rate", .number(get: { Double(config.braille.blinkRateMs) }, set: { config.braille.blinkRateMs = Int($0); Braille.blinkRateChanged() },
                     step: 100, min: 200, max: 2000, format: { "\(Int($0.rounded())) milliseconds" })),
                 MenuItem("Shape", .cycle(options: ["dots 7 and 8", "dot 8", "all dots"],
                     get: { ["78", "8", "all"].firstIndex(of: config.braille.cursorShape) ?? 0 },
