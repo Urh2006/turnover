@@ -79,9 +79,12 @@ public enum Braille {
     /// the last space before it instead (unless the word is longer than the display).
     private static var windows: [Int] = [0]
 
-    private static func windowStarts() -> [Int] {
+    private static func windowStarts(from anchor: Int = 0) -> [Int] {
         let n = display?.cellCount ?? 40
-        var starts: [Int] = [], s = 0
+        // Before the anchor (the focus with its context in front of it): whole display widths back to the start.
+        var starts: [Int] = [], s = min(anchor, max(0, cells.count - 1))
+        var back = s
+        while back > 0 { back = max(0, back - n); starts.insert(back, at: 0) }
         while s < max(cells.count, 1) {
             starts.append(s)
             var e = min(s + n, cells.count)
@@ -353,16 +356,58 @@ public enum Braille {
             // A list, table or outline: its selected item, as speech reads it (Mail's list showed only "message
             // table", 6 Oct 2026).
             let obj = selectedItem(in: focus) ?? focus
+            let wasShowingObject: Bool = { if case .object = source { return true }; return false }()
             source = .object(obj)
-            text = brailleText(Speech.objectPropertiesSpeech(obj, reason: .focus))
+            let own = brailleText(Speech.objectPropertiesSpeech(obj, reason: .focus))
+            let context = focusContext(focus: focus, item: obj)
+            text = context.isEmpty ? own : context + " " + own
             cursor = nil; selection = nil
-            windowStart = 0
             layout()
+            let ownStart = (text as NSString).length - (own as NSString).length
+            objectStartCell = cellMap.firstIndex { $0 >= ownStart } ?? 0
+            // Placed again only when the item or its context changed: panning back into the context stays put.
+            let objectChanged = !(lastObject?.isSameElement(as: obj) ?? false) || own != lastObjectText
+            let contextChanged = context != lastContextText
+            if objectChanged || contextChanged || !wasShowingObject {
+                let n = display?.cellCount ?? 40
+                let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && contextChanged)
+                // Filling the display: as much context as fits in front of the item, the item whole at the end.
+                objectAnchor = fill && cells.count - objectStartCell <= n ? max(0, cells.count - n) : objectStartCell
+                windowStart = objectAnchor
+            }
+            lastObject = obj; lastObjectText = own; lastContextText = context
+            windows = windowStarts(from: objectAnchor)
+            if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
         } else {
             source = nil; text = ""; cursor = nil; selection = nil; windowStart = 0
             layout()
         }
         show()
+    }
+
+    // MARK: Focus context (NVDA: focus context presentation)
+    //
+    // The containers the focus is in (a dialog, a list, a toolbar), in NVDA's short forms, in front of the item:
+    // "dlg Save lst Files sel 3 of 12". "changes" fills the display with them when the context changes (NVDA's
+    // default), "scroll" only shows them on panning back, "always" fills the display every time.
+
+    private static var objectStartCell = 0
+    private static var objectAnchor = 0
+    private static var lastObject: TurnOverObject?
+    private static var lastObjectText = ""
+    private static var lastContextText = ""
+    /// The ancestors the context was last read from, and its text: read again only when they change.
+    private static var contextElements: [AXUIElement] = []
+    private static var contextCache = ""
+
+    private static func focusContext(focus: TurnOverObject, item: TurnOverObject) -> String {
+        var chain = API.focusAncestors.reversed().filter { $0.isPresentableFocusAncestor && $0.role != .application }
+        if !item.isSameElement(as: focus) { chain.append(focus) }
+        let elements = chain.map(\.element)
+        if elements.count == contextElements.count, zip(elements, contextElements).allSatisfy({ CFEqual($0, $1) }) { return contextCache }
+        contextElements = elements
+        contextCache = chain.map { brailleText(Speech.objectPropertiesSpeech($0, reason: .focusEntered)) }.filter { !$0.isEmpty }.joined(separator: " ")
+        return contextCache
     }
 
     private static func selectedItem(in obj: TurnOverObject) -> TurnOverObject? {
@@ -647,6 +692,8 @@ public enum Braille {
             }
             refresh()
         case .object(let obj):
+            // A routing key over the context in front of the item: nothing to press there.
+            guard cell >= objectStartCell else { Log.io("braille: routing on the focus context"); return }
             _ = AXUIElementPerformAction(obj.element, kAXPressAction as CFString)
         case .item:
             // TurnOver's cursor item: a routing key opens or presses it, as Return does.
