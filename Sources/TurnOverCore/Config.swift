@@ -472,8 +472,11 @@ public struct Config: Codable {
         /// NVDA's focus context presentation: "changes" (fill the display when the context changes), "scroll" (only
         /// when panning back) or "always" (always fill the display).
         public var focusContext = "changes"
+        /// Panning on to another line moves the caret there ("line"), panning moves it to the start of each display's
+        /// width ("window"), or panning leaves it where it was ("off").
+        public var panMovesCaret = "line"
         public init() {}
-        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext }
+        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext, panMovesCaret }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             table = (try? c.decodeIfPresent(String.self, forKey: .table)) ?? ""
@@ -494,6 +497,7 @@ public struct Config: Codable {
             mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? "followCursors"
             autoScrollSeconds = (try? c.decodeIfPresent(Double.self, forKey: .autoScrollSeconds)) ?? 3.0
             focusContext = (try? c.decodeIfPresent(String.self, forKey: .focusContext)) ?? "changes"
+            panMovesCaret = (try? c.decodeIfPresent(String.self, forKey: .panMovesCaret)) ?? "line"
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
@@ -504,7 +508,7 @@ public struct Config: Codable {
             try c.encode(cursorShape, forKey: .cursorShape); try c.encode(wordWrap, forKey: .wordWrap); try c.encode(showSelection, forKey: .showSelection)
             try c.encode(interruptSpeechWhileScrolling, forKey: .interruptSpeechWhileScrolling); try c.encode(bluetooth, forKey: .bluetooth)
             try c.encode(tether, forKey: .tether); try c.encode(mode, forKey: .mode); try c.encode(autoScrollSeconds, forKey: .autoScrollSeconds)
-            try c.encode(focusContext, forKey: .focusContext)
+            try c.encode(focusContext, forKey: .focusContext); try c.encode(panMovesCaret, forKey: .panMovesCaret)
         }
     }
     public var general = General()
