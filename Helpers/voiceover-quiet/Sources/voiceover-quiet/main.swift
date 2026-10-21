@@ -103,9 +103,14 @@ final class Quiet {
             allowed = true
             guard turnOverWord.wantsSilent else { return "off" }   // TurnOver asked for VoiceOver back while macOS asked
         }
+        // Counted as muting from before the start, so an "off" read meanwhile isn't answered as done; checked again
+        // after it, so VoiceOver isn't kept muted once TurnOver has asked for it back.
+        turnOverWord.setMuting(true)
         switch tapAndStart(process, muted: true) {
-        case .failure(let error): return error.text
-        case .success(let running): tap = running.tap; device = running.device; proc = running.proc; tappedPid = pid; turnOverWord.setMuting(true)
+        case .failure(let error): turnOverWord.setMuting(false); return error.text
+        case .success(let running):
+            guard turnOverWord.wantsSilent else { end(running); turnOverWord.setMuting(false); return "off" }
+            tap = running.tap; device = running.device; proc = running.proc; tappedPid = pid
         }
         return "on"
     }

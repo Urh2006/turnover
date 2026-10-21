@@ -405,9 +405,9 @@ public enum Braille {
     private static var lastObject: TurnOverObject?
     private static var lastObjectText = ""
     private static var lastContextText = ""
-    /// The ancestors the context was last read from, and its text: read again only when they change.
+    /// The ancestors the context was last read from. Its words are read fresh each time: a dialog keeps its element
+    /// when its title changes, and a list its element when its name or position does.
     private static var contextElements: [AXUIElement] = []
-    private static var contextCache = ""
     private static var lastContextElements: [AXUIElement] = []
 
     private static func sameElements(_ a: [AXUIElement], _ b: [AXUIElement]) -> Bool {
@@ -417,11 +417,8 @@ public enum Braille {
     private static func focusContext(focus: TurnOverObject, item: TurnOverObject) -> String {
         var chain = API.focusAncestors.reversed().filter { $0.isPresentableFocusAncestor && $0.role != .application }
         if !item.isSameElement(as: focus) { chain.append(focus) }
-        let elements = chain.map(\.element)
-        if sameElements(elements, contextElements) { return contextCache }
-        contextElements = elements
-        contextCache = chain.map { brailleText(Speech.objectPropertiesSpeech($0, reason: .focusEntered)) }.filter { !$0.isEmpty }.joined(separator: " ")
-        return contextCache
+        contextElements = chain.map(\.element)
+        return chain.map { brailleText(Speech.objectPropertiesSpeech($0, reason: .focusEntered)) }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private static func selectedItem(in obj: TurnOverObject) -> TurnOverObject? {

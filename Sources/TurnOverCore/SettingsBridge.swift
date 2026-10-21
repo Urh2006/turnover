@@ -48,11 +48,15 @@ public enum SettingsBridge {
     /// The braille tables, as [identifier, name] pairs: the user's language's first, then every other language's,
     /// named with the language. Read once (going through every language's tables takes a moment).
     private static let brailleTables: [[String]] = {
+        // Each table once (one can serve several languages; the picker needs each identifier once), under the first
+        // name met: the user's own language's.
         var out = TOBrailleTranslatorTables.forUser().map { [$0.id, $0.name] }
+        var seen = Set(out.map { $0[0] })
         for lang in TOBrailleTranslatorTables.otherLanguages() {
-            out += lang.tables.map { [$0.id, "\(lang.language): \($0.name)"] }
+            for t in lang.tables where seen.insert(t.id).inserted { out.append([t.id, "\(lang.language): \(t.name)"]) }
         }
-        return out
+        var first = Set<String>()
+        return out.filter { first.insert($0[0]).inserted }
     }()
 
     static func apply(_ json: String) {
