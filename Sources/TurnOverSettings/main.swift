@@ -11,6 +11,9 @@ import TurnOverControl
 final class Model: ObservableObject {
     @Published var state: [String: Any] = [:]
     @Published var connected = false
+    /// The section shown. Kept here rather than in a @State: State is a macro in the macOS 27 SDK, and its plugin
+    /// comes only with Xcode, so the Command Line Tools could not build this app (21 Oct 2026).
+    @Published var pane: Pane? = .speech
     private var connection: ControlClient.Connection?
 
     init() {
@@ -80,17 +83,16 @@ enum Pane: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject var model: Model
-    @State private var section: Pane? = .speech
     var body: some View {
         NavigationSplitView {
-            List(Pane.allCases, selection: $section) { s in Text(s.rawValue).tag(s) }
+            List(Pane.allCases, selection: $model.pane) { s in Text(s.rawValue).tag(s) }
                 .navigationSplitViewColumnWidth(170)
                 .accessibilityLabel("Settings sections")
         } detail: {
             if !model.connected {
                 Text("Waiting for TurnOver. Start it with Command Control Period.").padding()
             } else {
-                switch section ?? .speech {
+                switch model.pane ?? .speech {
                 case .speech: SpeechView()
                 case .keyboard: KeyboardView()
                 case .documents: DocumentsView()
