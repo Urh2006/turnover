@@ -83,11 +83,15 @@ public enum SettingsBridge {
             guard let merged = try? JSONSerialization.data(withJSONObject: dict), let next = try? JSONDecoder().decode(Config.self, from: merged) else {
                 Log.warning("settings app: a change TurnOver couldn't read; nothing changed"); sendState(); return
             }
+            let bluetoothWas = config.braille.bluetooth, autoScrollWas = config.braille.autoScrollSeconds
             config = next
             config.save()
             SettingsProfiles.applyLive()
             KeySettings.refresh()
             TurnOverMenu.shared.onGeneralChanged?()
+            // As the menu's toggle does: look for the paired display now, not only when no display is in use.
+            if config.braille.bluetooth, !bluetoothWas { BrailleDisplays.shared.lookNow() }
+            if config.braille.autoScrollSeconds != autoScrollWas { Braille.autoScrollIntervalChanged() }
             Log.info("settings app: \(filePatch.keys.sorted().joined(separator: ", ")) changed")
         }
         sendState()

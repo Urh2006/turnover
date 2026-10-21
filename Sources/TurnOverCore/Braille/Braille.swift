@@ -636,6 +636,8 @@ public enum Braille {
         case .showMessages:
             config.braille.showMessages = next(["timeout", "indefinitely", "off"], config.braille.showMessages)
             said = "braille messages " + (["timeout": "use timeout", "indefinitely": "show indefinitely", "off": "disabled"][config.braille.showMessages] ?? "")
+            // A message held until a key press would otherwise stay up with messages now off.
+            if config.braille.showMessages == "off" { messageUntil = nil }
         case .showSelection:
             config.braille.showSelection.toggle(); said = config.braille.showSelection ? "braille show selection on" : "braille show selection off"
         case .focusContext:
@@ -664,6 +666,8 @@ public enum Braille {
             MainActor.assumeIsolated { if display != nil { pan(forward: true) } else { autoScroll?.invalidate(); autoScroll = nil } }
         }
     }
+    /// The interval changed in TurnOver Settings: a running auto scroll takes it at once.
+    public static func autoScrollIntervalChanged() { if autoScroll != nil { startAutoScroll() } }
     public static func autoScrollRate(faster: Bool) {
         config.braille.autoScrollSeconds = max(0.5, min(20, config.braille.autoScrollSeconds + (faster ? -0.5 : 0.5))); config.save()
         if autoScroll != nil { startAutoScroll() }
@@ -753,18 +757,18 @@ public enum Braille {
             r.start = lineStart + offset; r.end = r.start
             r.updateCaret()
             if config.braille.tether == "review" || showingReview { TextReview.set(r) }
-            // NVDA: speak the character when routing the cursor in text.
-            if config.braille.speakCharacterOnRouting, !(API.focusTreeInterceptor.map { !$0.passThrough } ?? false) {
+            // Only on a link or button: plain text has nothing to press, and saying so at every routing key would wear.
+            var activate: Script?
+            if let d = API.focusTreeInterceptor, !d.passThrough, let b = r as? BufferTextInfo, onActionable(b.element(at: r.start)) {
+                activate = ScriptHandler.findScript(named: "activatePosition")
+            }
+            // NVDA: speak the character when routing the cursor in text (not when the key presses a link instead).
+            if config.braille.speakCharacterOnRouting, activate == nil {
                 Speech.cancel()
                 let ch = r.copy(); ch.expand(.character)
                 Speech.speakTextInfo(ch, unit: .character, reason: .caret)
             }
-            // Only on a link or button: plain text has nothing to press, and saying so at every routing key would wear.
-            if let d = API.focusTreeInterceptor, !d.passThrough, let b = r as? BufferTextInfo, onActionable(b.element(at: r.start)),
-               let s = ScriptHandler.findScript(named: "activatePosition") {
-                _ = d
-                s.handler(KeyboardGesture(keyCode: 36, modifiers: [], characters: "\r", timestamp: 0, isRepeat: false, flags: []))
-            }
+            activate?.handler(KeyboardGesture(keyCode: 36, modifiers: [], characters: "\r", timestamp: 0, isRepeat: false, flags: []))
             refresh()
         case .object(let obj):
             // A routing key over the context in front of the item: nothing to press there.

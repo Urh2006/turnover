@@ -74,6 +74,10 @@ final class Model: ObservableObject {
     func number(_ section: String, _ key: String) -> Binding<Double> {
         Binding(get: { (self.get(section, key) as? NSNumber)?.doubleValue ?? 0 }, set: { self.set(section, key, Int($0.rounded())) })
     }
+    /// A number kept with its fraction (seconds in half steps).
+    func decimal(_ section: String, _ key: String) -> Binding<Double> {
+        Binding(get: { (self.get(section, key) as? NSNumber)?.doubleValue ?? 0 }, set: { self.set(section, key, $0) })
+    }
 }
 
 enum Pane: String, CaseIterable, Identifiable {
@@ -202,6 +206,8 @@ struct BrailleView: View {
                     Text("Line by line").tag("line"); Text("To the text shown").tag("window"); Text("Off").tag("off")
                 }
                 Toggle("Stop speech while panning", isOn: model.bool("braille", "interruptSpeechWhileScrolling"))
+                Stepper("Auto scroll: every \(model.decimal("braille", "autoScrollSeconds").wrappedValue, specifier: "%.1f") seconds",
+                        value: model.decimal("braille", "autoScrollSeconds"), in: 0.5...20, step: 0.5)
                 Toggle("Speak the character when routing", isOn: model.bool("braille", "speakCharacterOnRouting"))
             }
             Section("Cursor") {
