@@ -10,6 +10,24 @@ import TurnOverSpeech
 import AXFixtures
 
 func pureTests() {
+    test("typing echo: the field's word once it has taken the key, the letters typed only without one") {
+        expect(Speech.wordJustTyped(field: "the", typed: "teh"), "the", "autocorrect: the field's word")
+        expect(Speech.wordJustTyped(field: "café", typed: "cafe"), "café", "a dead key's accent")
+        expect(Speech.wordJustTyped(field: nil, typed: "word"), "word", "no field word: the letters typed")
+        expect(Speech.wordJustTyped(field: "", typed: ""), nil, "nothing")
+        // Taken: the space is in, and only the next word's letters after it.
+        let a = Speech.fieldWord(endedBy: " ", before: "one two ", notBefore: 4)
+        check(a.taken && a.word == "two", "taken: \(a)")
+        let b = Speech.fieldWord(endedBy: " ", before: "one two th", notBefore: 4)
+        check(b.taken && b.word == "two", "typed on into the next word: \(b)")
+        // Not yet: the field lags; the only space is the word before's.
+        let c = Speech.fieldWord(endedBy: " ", before: "one tw", notBefore: 4)
+        check(!c.taken, "lagging field: \(c)")
+        let d = Speech.fieldWord(endedBy: ".", before: "かな.", notBefore: 0)
+        check(d.taken && d.word == "かな", "kana: \(d)")
+        let e = Speech.fieldWord(endedBy: "\r", before: "line\n", notBefore: 0)
+        check(e.taken && e.word == "line", "Return against the field's line break: \(e)")
+    }
     test("keyboard help: the description in a few words") {
         func brief(_ d: String) -> String { Script.brief(d) }
         expect(brief("Moves to the next heading"), "Moves to the next heading")

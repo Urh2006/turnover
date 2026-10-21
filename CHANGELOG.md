@@ -6,6 +6,9 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 
 ### Fixed
 
+- VoiceOver is no longer left silent while macOS asks for permission to record audio (after TurnOver is re-signed or
+  reinstalled): it reads the question out, and TurnOver taking over or quitting while it is open gives VoiceOver back
+  at once instead of after 90 seconds.
 - The speech settings are TurnOver's own again: the rate, volume and pitch keys change TurnOver's voice only, and
   TurnOver no longer reads VoiceOver's rate when it takes over. The link between the two readers' settings wasn't
   reliable.
