@@ -622,6 +622,8 @@ public enum Braille {
         Speech.speakMessage(config.braille.mode == "speechOutput" ? "braille mode display speech output" : "braille mode follow cursors")
         refresh()
     }
+    /// Messages just turned off: a message held until a key press would otherwise stay up.
+    public static func dropHeldMessage() { messageUntil = nil }
     /// NVDA's braille settings scripts: each goes round its values, says the new one and shows it.
     public enum CycledSetting { case showCursor, cursorShape, showMessages, showSelection, focusContext, panMovesCaret }
     public static func cycleSetting(_ setting: CycledSetting) {
@@ -636,8 +638,7 @@ public enum Braille {
         case .showMessages:
             config.braille.showMessages = next(["timeout", "indefinitely", "off"], config.braille.showMessages)
             said = "braille messages " + (["timeout": "use timeout", "indefinitely": "show indefinitely", "off": "disabled"][config.braille.showMessages] ?? "")
-            // A message held until a key press would otherwise stay up with messages now off.
-            if config.braille.showMessages == "off" { messageUntil = nil }
+            if config.braille.showMessages == "off" { dropHeldMessage() }
         case .showSelection:
             config.braille.showSelection.toggle(); said = config.braille.showSelection ? "braille show selection on" : "braille show selection off"
         case .focusContext:
