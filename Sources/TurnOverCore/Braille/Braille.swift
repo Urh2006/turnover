@@ -300,6 +300,7 @@ public enum Braille {
         guard display != nil else { return }
         if let until = messageUntil, Date() < until { return }
         messageUntil = nil
+        showingReview = false
         if let m = modalLine?() {
             let changed = !modalShowing || text != displayed(m.0)
             source = .message; modalShowing = true
@@ -343,8 +344,9 @@ public enum Braille {
             if reviewed == nil, let h = heldLine {
                 if h.caret == caret.start, h.info.obj.isSameElement(as: caret.obj) { shown = h.info.copy() } else { heldLine = nil }
             }
-            let line = shown.copy(); line.expand(.line)
+            let line = shown.copy(); line.expand(readingUnit)
             source = .text(line, lineStart: line.start)
+            showingReview = reviewed != nil
             text = displayed(line.text)
             let caretHere = caret.start >= line.start && caret.start <= line.end
             cursor = caretHere ? caret.start - line.start : nil
@@ -431,7 +433,14 @@ public enum Braille {
     }
 
     /// The cursor's dots (NVDA: cursor shape), and whether the blink has it showing now.
-    private static var cursorDots: UInt8 { ["8": 0x80, "all": 0xFF][config.braille.cursorShape] ?? 0xC0 }
+    private static var cursorDots: UInt8 {
+        let shape = showingReview ? config.braille.cursorShapeReview : config.braille.cursorShape
+        return ["8": 0x80, "all": 0xFF][shape] ?? 0xC0
+    }
+    /// The display shows the review cursor's line (NVDA: its own cursor shape).
+    private static var showingReview = false
+    /// NVDA: read by paragraph; the display's line keys and panning move by paragraph instead of by line.
+    private static var readingUnit: TextUnit { config.braille.readByParagraph ? .paragraph : .line }
     private static var blinkOn = true
     private static var blinkTimer: Timer?
 
@@ -650,7 +659,7 @@ public enum Braille {
         guard case .text(let info, _) = source else { press(direction > 0 ? "downArrow" : "upArrow"); return }
         let r = info.copy()
         r.collapse()
-        guard r.move(.line, direction) != 0 else { Tones.edge(); return }
+        guard r.move(readingUnit, direction) != 0 else { Tones.edge(); return }
         // The caret follows the display (Panning moves the cursor), so the arrows carry on from the line read on the
         // display, not from where reading began (VoiceOver left the caret behind: a tester, 21 Oct 2026).
         let caretWas = API.caretObject.flatMap { try? $0.makeTextInfo(.caret) }?.start
@@ -660,8 +669,8 @@ public enum Braille {
         // The line is spoken as well as shown, as VoiceOver does (the display moved on silently, 6 Oct 2026).
         SayAll.stop()
         Speech.cancel()
-        let spoken = r.copy(); spoken.expand(.line)
-        Speech.speakTextInfo(spoken, unit: .line, reason: .caret)
+        let spoken = r.copy(); spoken.expand(readingUnit)
+        Speech.speakTextInfo(spoken, unit: readingUnit, reason: .caret)
         refresh()
         if toEnd { windowStart = windows.last ?? 0; show(); caretToWindow() }
     }
@@ -709,6 +718,13 @@ public enum Braille {
             let offset = cell < cellMap.count ? cellMap[cell] : (text as NSString).length
             r.start = lineStart + offset; r.end = r.start
             r.updateCaret()
+            if config.braille.tether == "review" || showingReview { TextReview.set(r) }
+            // NVDA: speak the character when routing the cursor in text.
+            if config.braille.speakCharacterOnRouting, !(API.focusTreeInterceptor.map { !$0.passThrough } ?? false) {
+                Speech.cancel()
+                let ch = r.copy(); ch.expand(.character)
+                Speech.speakTextInfo(ch, unit: .character, reason: .caret)
+            }
             // Only on a link or button: plain text has nothing to press, and saying so at every routing key would wear.
             if let d = API.focusTreeInterceptor, !d.passThrough, let b = r as? BufferTextInfo, onActionable(b.element(at: r.start)),
                let s = ScriptHandler.findScript(named: "activatePosition") {

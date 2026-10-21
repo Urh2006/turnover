@@ -475,8 +475,14 @@ public struct Config: Codable {
         /// Panning on to another line moves the caret there ("line"), panning moves it to the start of each display's
         /// width ("window"), or panning leaves it where it was ("off").
         public var panMovesCaret = "line"
+        /// NVDA: the review cursor's own shape ("78", "8", "all"; NVDA's default is dot 8 alone).
+        public var cursorShapeReview = "8"
+        /// NVDA: read by paragraph.
+        public var readByParagraph = false
+        /// NVDA: speak the character when routing the cursor in text.
+        public var speakCharacterOnRouting = true
         public init() {}
-        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext, panMovesCaret }
+        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext, panMovesCaret, cursorShapeReview, readByParagraph, speakCharacterOnRouting }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             table = (try? c.decodeIfPresent(String.self, forKey: .table)) ?? ""
@@ -498,6 +504,9 @@ public struct Config: Codable {
             autoScrollSeconds = (try? c.decodeIfPresent(Double.self, forKey: .autoScrollSeconds)) ?? 3.0
             focusContext = (try? c.decodeIfPresent(String.self, forKey: .focusContext)) ?? "changes"
             panMovesCaret = (try? c.decodeIfPresent(String.self, forKey: .panMovesCaret)) ?? "line"
+            cursorShapeReview = (try? c.decodeIfPresent(String.self, forKey: .cursorShapeReview)) ?? "8"
+            readByParagraph = (try? c.decodeIfPresent(Bool.self, forKey: .readByParagraph)) ?? false
+            speakCharacterOnRouting = (try? c.decodeIfPresent(Bool.self, forKey: .speakCharacterOnRouting)) ?? true
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
@@ -509,6 +518,8 @@ public struct Config: Codable {
             try c.encode(interruptSpeechWhileScrolling, forKey: .interruptSpeechWhileScrolling); try c.encode(bluetooth, forKey: .bluetooth)
             try c.encode(tether, forKey: .tether); try c.encode(mode, forKey: .mode); try c.encode(autoScrollSeconds, forKey: .autoScrollSeconds)
             try c.encode(focusContext, forKey: .focusContext); try c.encode(panMovesCaret, forKey: .panMovesCaret)
+            try c.encode(cursorShapeReview, forKey: .cursorShapeReview); try c.encode(readByParagraph, forKey: .readByParagraph)
+            try c.encode(speakCharacterOnRouting, forKey: .speakCharacterOnRouting)
         }
     }
     public var general = General()
