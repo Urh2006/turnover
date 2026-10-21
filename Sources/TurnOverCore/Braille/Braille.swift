@@ -81,22 +81,26 @@ public enum Braille {
 
     private static func windowStarts(from anchor: Int = 0) -> [Int] {
         let n = display?.cellCount ?? 40
-        // Before the anchor (the focus with its context in front of it): whole display widths back to the start.
-        var starts: [Int] = [], s = min(anchor, max(0, cells.count - 1))
-        var back = s
-        while back > 0 { back = max(0, back - n); starts.insert(back, at: 0) }
-        while s < max(cells.count, 1) {
-            starts.append(s)
-            var e = min(s + n, cells.count)
-            if config.braille.wordWrap, e < cells.count, cells[e] & 0x3F != 0, cells[e - 1] & 0x3F != 0,
+        // Where the window starting at s ends, no further than limit.
+        func end(_ s: Int, limit: Int) -> Int {
+            var e = min(s + n, limit)
+            if config.braille.wordWrap, e < limit, cells[e] & 0x3F != 0, cells[e - 1] & 0x3F != 0,
                let space = (s + 1..<e).last(where: { cells[$0] & 0x3F == 0 }) {
                 e = space + 1
             }
             // The next window starts at the next word: blanks at a break are skipped.
-            while e < cells.count, cells[e] & 0x3F == 0, config.braille.wordWrap { e += 1 }
+            while e < limit, cells[e] & 0x3F == 0, config.braille.wordWrap { e += 1 }
             if e <= s { e = s + n }
-            s = e
+            return e
         }
+        // Before the anchor (the focus with its context in front of it): the same windows from the start, the last
+        // ending at the anchor. Whole display widths back from it split context words with word wrap on (code
+        // review, 21 Oct 2026).
+        let at = min(anchor, max(0, cells.count - 1))
+        var starts: [Int] = [], s = 0
+        while s < at { starts.append(s); s = min(end(s, limit: at), at) }
+        s = at
+        while s < max(cells.count, 1) { starts.append(s); s = end(s, limit: cells.count) }
         return starts
     }
 
