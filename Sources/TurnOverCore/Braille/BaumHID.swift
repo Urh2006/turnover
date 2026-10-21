@@ -146,7 +146,7 @@ public final class BrailleDisplays {
         p.arguments = ["scrod"]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try? p.run(); p.waitUntilExit()
-        if p.terminationStatus == 0 { Log.info("braille: VoiceOver's braille server asked to quit, so TurnOver can connect over Bluetooth") }
+        if p.terminationStatus == 0 { Log.info("braille: VoiceOver's braille server asked to quit, so TurnOver can connect to the display") }
         return p.terminationStatus == 0
     }
 
