@@ -97,6 +97,7 @@ public final class BrailleDisplays {
     /// quit and look again; if the display still won't open, say so once, as nothing on the display can.
     private var lastDetectReport = ""
     private var lastUSBFree = Date.distantPast
+    private var retryPending = false
     private var toldUnopened = false
 
     private func noteUnopened() {
@@ -108,12 +109,17 @@ public final class BrailleDisplays {
         guard TOAppleBrailleDisplay.lastDetectFoundUnopened else { return }
         // VoiceOver still on (a hand-over under way): it has the display by right; the scan looks again in 3 s.
         if NSWorkspace.shared.isVoiceOverEnabled { return }
+        // scrod was just asked to quit (here, or for Bluetooth) and the look again is still to come: not said yet.
+        if Date() < quickRetryUntil || retryPending { return }
         if Date().timeIntervalSince(lastUSBFree) > 30 {
             lastUSBFree = Date()
             guard Self.quitVoiceOversBrailleServer() else { tellUnopened(); return }
             // Give the display a moment to be free, then look again (the 3 s scan would too, later).
+            retryPending = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard let self, self.apple == nil, self.lookAgain != nil || self.manager != nil else { return }
+                guard let self else { return }
+                self.retryPending = false
+                guard self.apple == nil, self.lookAgain != nil || self.manager != nil else { return }
                 if self.useApple() { self.stopOwn() }
             }
             return

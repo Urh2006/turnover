@@ -375,7 +375,8 @@ public enum Braille {
             objectStartCell = cellMap.firstIndex { $0 >= ownStart } ?? 0
             // Placed again only when the item or its context changed: panning back into the context stays put.
             let objectChanged = !(lastObject?.isSameElement(as: obj) ?? false) || own != lastObjectText
-            let contextChanged = context != lastContextText
+            // Two containers can read alike ("lst" and "lst"): the change is in the elements as well as the words.
+            let contextChanged = context != lastContextText || !sameElements(contextElements, lastContextElements)
             if objectChanged || contextChanged || !wasShowingObject {
                 let n = display?.cellCount ?? 40
                 let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && contextChanged)
@@ -383,7 +384,7 @@ public enum Braille {
                 objectAnchor = fill && cells.count - objectStartCell <= n ? max(0, cells.count - n) : objectStartCell
                 windowStart = objectAnchor
             }
-            lastObject = obj; lastObjectText = own; lastContextText = context
+            lastObject = obj; lastObjectText = own; lastContextText = context; lastContextElements = contextElements
             windows = windowStarts(from: objectAnchor)
             if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
         } else {
@@ -407,12 +408,17 @@ public enum Braille {
     /// The ancestors the context was last read from, and its text: read again only when they change.
     private static var contextElements: [AXUIElement] = []
     private static var contextCache = ""
+    private static var lastContextElements: [AXUIElement] = []
+
+    private static func sameElements(_ a: [AXUIElement], _ b: [AXUIElement]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { CFEqual($0, $1) }
+    }
 
     private static func focusContext(focus: TurnOverObject, item: TurnOverObject) -> String {
         var chain = API.focusAncestors.reversed().filter { $0.isPresentableFocusAncestor && $0.role != .application }
         if !item.isSameElement(as: focus) { chain.append(focus) }
         let elements = chain.map(\.element)
-        if elements.count == contextElements.count, zip(elements, contextElements).allSatisfy({ CFEqual($0, $1) }) { return contextCache }
+        if sameElements(elements, contextElements) { return contextCache }
         contextElements = elements
         contextCache = chain.map { brailleText(Speech.objectPropertiesSpeech($0, reason: .focusEntered)) }.filter { !$0.isEmpty }.joined(separator: " ")
         return contextCache
