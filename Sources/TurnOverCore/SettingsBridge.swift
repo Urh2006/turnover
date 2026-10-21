@@ -11,6 +11,7 @@
 import Foundation
 import AppKit
 import TurnOverControl
+import TurnOverSpeech
 
 public enum SettingsBridge {
     private static var started = false
@@ -41,6 +42,8 @@ public enum SettingsBridge {
         dict["_kokoroSpeed"] = KokoroVoice.speed
         dict["_coexist"] = Coexist.wouldBeOn
         dict["_brailleTables"] = brailleTables
+        dict["_outputDevices"] = SpeechPlayer.outputDevices().map { ["uid": $0.uid, "name": $0.name] }
+        dict["_speechPortApps"] = SpeechPort.shared.appDecisions.map { ["id": $0.id, "name": $0.name, "allowed": $0.allowed] }
         guard let out = try? JSONSerialization.data(withJSONObject: dict), let s = String(data: out, encoding: .utf8) else { return }
         if let reply { reply(["op": "state", "json": s]) } else { ControlServer.shared.broadcast(["op": "state", "json": s]) }
     }
@@ -65,6 +68,7 @@ public enum SettingsBridge {
         if let m = patch["_kokoroMode"] as? String { KokoroVoice.mode = m == "off" ? "off" : "reading" }
         if let v = patch["_kokoroVoice"] as? String, KokoroVoice.englishVoices.contains(v) { KokoroVoice.voice = v; KokoroVoice.mode = "reading"; KokoroVoice.preview(v) }
         if let s = patch["_kokoroSpeed"] as? Double { KokoroVoice.speed = min(2, max(0.6, s)) }
+        if let a = patch["_speechPortAllowed"] as? [String: Any], let id = a["id"] as? String, let on = a["allowed"] as? Bool { SpeechPort.shared.setAllowed(id, on) }
         if let on = patch["_coexist"] as? Bool, on != Coexist.wouldBeOn {
             UserDefaults.standard.set(on, forKey: "coexist")
             Speech.speakMessage(on ? "CoExist on. TurnOver restarts." : "CoExist off. TurnOver restarts.")
@@ -87,21 +91,27 @@ public enum SettingsBridge {
             guard let merged = try? JSONSerialization.data(withJSONObject: dict), let next = try? JSONDecoder().decode(Config.self, from: merged) else {
                 Log.warning("settings app: a change TurnOver couldn't read; nothing changed"); sendState(); return
             }
-            let bluetoothWas = config.braille.bluetooth, autoScrollWas = config.braille.autoScrollSeconds, messagesWere = config.braille.showMessages
-            let blinkWas = config.braille.blinkRateMs
-            let keysWere = (config.general.keyboardStyle, config.general.windowsKeysEverywhere)
+            let before = config
             config = next
             config.save()
             SettingsProfiles.applyLive()
             KeySettings.refresh()
             TurnOverMenu.shared.onGeneralChanged?()
-            // The key layer where VoiceOver reads follows the style and its own setting, as from the menu.
-            if keysWere != (config.general.keyboardStyle, config.general.windowsKeysEverywhere) { GlobalCommands.onKeyboardStyleChanged?() }
-            // As the menu's toggle does: look for the paired display now, not only when no display is in use.
-            if config.braille.bluetooth, !bluetoothWas { BrailleDisplays.shared.lookNow() }
-            if config.braille.autoScrollSeconds != autoScrollWas { Braille.autoScrollIntervalChanged() }
-            if config.braille.blinkRateMs != blinkWas { Braille.blinkRateChanged() }
-            if config.braille.showMessages == "off", messagesWere != "off" { Braille.dropHeldMessage(); Braille.refreshSoon() }
+            // The hooks the menu's own items run (the Settings window is the menu's equal since 21 Oct 2026).
+            if before.general.screenCurtain != next.general.screenCurtain { TurnOverMenu.shared.onScreenCurtainChanged?() }
+            if before.speech.outputDevice != next.speech.outputDevice {
+                Speech.player.outputDeviceUID = next.speech.outputDevice.isEmpty ? nil : next.speech.outputDevice
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Speech.speakMessage("Speech on \(Speech.player.outputDescription)") }
+            }
+            if before.general.keyboardStyle != next.general.keyboardStyle { GlobalCommands.setKeyboardStyle(next.general.style) }
+            if before.braille.bluetooth != next.braille.bluetooth, next.braille.bluetooth { BrailleDisplays.shared.lookNow() }
+            if before.speech.voice != next.speech.voice { Languages.forget() }
+            // The fork's braille hooks, as the menu's items run them.
+            if before.braille.autoScrollSeconds != next.braille.autoScrollSeconds { Braille.autoScrollIntervalChanged() }
+            if before.braille.blinkRateMs != next.braille.blinkRateMs { Braille.blinkRateChanged() }
+            if next.braille.showMessages == "off", before.braille.showMessages != "off" { Braille.dropHeldMessage(); Braille.refreshSoon() }
+            // The key layer where VoiceOver reads follows its own setting too (the style's change starts or stops it above).
+            if before.general.keysWhereVoiceOverReads != next.general.keysWhereVoiceOverReads { GlobalCommands.onKeyboardStyleChanged?() }
             Log.info("settings app: \(filePatch.keys.sorted().joined(separator: ", ")) changed")
         }
         sendState()

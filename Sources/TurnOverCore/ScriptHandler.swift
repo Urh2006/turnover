@@ -165,7 +165,7 @@ public enum ScriptHandler {
         let took = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1e6
         if took > 100 { Log.warning(String(format: "script %@ took %.0f ms: %d accessibility calls, %.0f ms in them", script.name, took, AXStats.calls - calls0, AXStats.ms - ms0)) }
         // A key gives way to a message held on the display ("indefinitely"): browse mode's line moves change no
-        // focus and no caret, and the display stayed on "nothing more" while Urh read on (21 Oct 2026). A message the
+        // focus and no caret, and the display stayed on "nothing more" while speech read on (21 Oct 2026). A message the
         // script itself just put up stays.
         Braille.focusOrCaretMoved()
         Braille.refreshSoon()

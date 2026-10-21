@@ -4,11 +4,23 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 
 ## 2.0, build 22 (in progress)
 
+### Changed
+
+- The menu is short, in NVDA's shape: This app, Settings, Keys, Tools, Help, Support TurnOver, Quit. Every setting
+  now lives in the Settings window, in sections down the side: General, Speech, Keyboard, Item details, Web pages,
+  Documents, Screen recognition, Other apps' speech, Experimental. Two wait in Tools until they have a section:
+  Braille, and voices for other languages.
+- VoiceOver keys: Left and Right pressed together, which turn Quick Nav off and on, now also switch a document between
+  focus mode and browse mode: off is focus mode (the keys go to the page, until the focus leaves), on is browse mode.
+  There was no deliberate way into focus mode in this style, since TurnOver Space is VO-Space.
+- Command Control M opens the TurnOver menu in one press, in every keyboard style. Command Control Comma then M
+  still works.
+
 ### Fixed
 
-- With NVDA or JAWS keys, VoiceOver's own Caps Lock keys work again where VoiceOver reads (VO-F7, VO-F8, VO-M):
-  the layer that turns Caps Lock into the NVDA key there now runs only with the new TurnOver menu item Keyboard,
-  Windows keys where VoiceOver reads (also in Settings, Keyboard). Its setting existed but was never read.
+- With NVDA or JAWS keys, the layer that makes Caps Lock the NVDA key where VoiceOver reads can be turned off: Settings,
+  Keyboard, "NVDA and JAWS keys where VoiceOver reads too" (on, as before). Off, VoiceOver's own Caps Lock keys
+  (VO-F7, VO-F8, VO-M) work in the apps VoiceOver reads. The old setting for it was never read.
 - VoiceOver is no longer left silent while macOS asks for permission to record audio (after TurnOver is re-signed or
   reinstalled): it reads the question out, and TurnOver taking over or quitting while it is open gives VoiceOver back
   at once instead of after 90 seconds.
@@ -20,6 +32,19 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
   Backspace will delete. NVDA keys and JAWS keys keep reading the character after the caret, as on Windows.
 - Backspace speaks the deleted character at once, instead of after waiting for the caret (Mail's compose window held
   every repeated Backspace back by a quarter of a second).
+- A list focused twice within half a second with a different row selected (Finder opening a folder) is read
+  each time; it was taken for the same focus and read once.
+- Word's own dictionary decides what is misspelled in Word; the choice now lives in Word's app module instead of
+  shared code, with tests (a contributor's change).
+- The app shortcut picker offers every application once: Safari and other apps reached through a link were missing,
+  and some appeared twice (a contributor's change).
+- Finder: Command Down on a folder, and Command Up, are sent again if Finder ignored them. About one press in
+  twenty did nothing although the key reached Finder; now, if nothing has changed a third of a second later, the key
+  goes once more. Only for a folder, never for a file, so nothing opens twice. A symptom fix; the cause is in Finder.
+- Finder: an empty folder is read as empty, and Down Arrow in it says so. It was read as a list of four or five
+  items, and the arrows walked through the columns.
+- A menu item, button or link with no name of its own is named by the text it holds (GitHub Desktop's lists of
+  repositories and branches were nameless menu items).
 
 ## 2.0, build 21
 

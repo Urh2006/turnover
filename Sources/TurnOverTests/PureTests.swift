@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Tests of the pure parts: no application, no speech, no keyboard.
 import Foundation
+import Darwin
 import AppKit
 import AVFoundation
 import CoreGraphics
@@ -35,6 +36,46 @@ func pureTests() {
         // A closing double quote the field made curly.
         let h = Speech.fieldWord(endedBy: "\"", before: "say “hi” ", notBefore: 5)
         check(h.taken && h.word == "hi", "a closing smart quote: \(h)")
+    }
+    test("finder: a list row is a folder by its Kind cell or the folder's dashes in Size") {
+        expect(FinderRows.isFolderRow(cellTexts: ["Reports", "Today at 10:14", "--", "Folder"]), true)
+        expect(FinderRows.isFolderRow(cellTexts: ["Notes.docx", "8 Oct 2026 at 15:57", "244 KB", "Microsoft Word document (.docx)"]), false)
+        expect(FinderRows.isFolderRow(cellTexts: ["Reports", "Today at 10:14", "--"]), true, "the Kind column hidden")
+        expect(FinderRows.isFolderRow(cellTexts: []), false, "an icon view item has no cells")
+    }
+    test("applications: hidden links to visible apps appear once, hidden apps stay out") {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("turnover-app-list-test-\(UUID().uuidString)")
+        let root = dir.appendingPathComponent("Applications")
+        let targets = dir.appendingPathComponent("Targets")
+        try fm.createDirectory(at: root.appendingPathComponent("Utilities"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        func app(_ name: String, id: String, in directory: URL) throws -> URL {
+            let url = directory.appendingPathComponent(name + ".app")
+            try fm.createDirectory(at: url.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+            let plist = ["CFBundleIdentifier": id, "CFBundleName": name, "CFBundlePackageType": "APPL"]
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+                .write(to: url.appendingPathComponent("Contents/Info.plist"))
+            return url
+        }
+        let browser = try app("Browser", id: "org.example.browser", in: targets)
+        let link = root.appendingPathComponent("Browser.app")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "../Targets/Browser.app")
+        check(lchflags(link.path, UInt32(UF_HIDDEN)) == 0, "hide the link without hiding its target")
+        let nestedLink = root.appendingPathComponent("Utilities/Browser.app")
+        try fm.createSymbolicLink(at: nestedLink, withDestinationURL: browser)
+        check(lchflags(nestedLink.path, UInt32(UF_HIDDEN)) == 0, "hide the duplicate link in Utilities")
+        _ = try app("Visible", id: "org.example.visible", in: root)
+        _ = try app("Tool", id: "org.example.tool", in: root.appendingPathComponent("Utilities"))
+        let hidden = try app("Hidden", id: "org.example.hidden", in: root)
+        check(lchflags(hidden.path, UInt32(UF_HIDDEN)) == 0, "hide the ordinary app")
+        let hiddenLink = root.appendingPathComponent("Hidden link.app")
+        try fm.createSymbolicLink(at: hiddenLink, withDestinationURL: hidden)
+        check(lchflags(hiddenLink.path, UInt32(UF_HIDDEN)) == 0, "hide the link to the hidden app")
+        try fm.createSymbolicLink(at: root.appendingPathComponent("Missing.app"), withDestinationURL: targets.appendingPathComponent("Missing.app"))
+        let apps = TurnOverMenu.installedApps(in: [root])
+        expect(apps.map(\.0).sorted(), ["org.example.browser", "org.example.tool", "org.example.visible"])
+        expect(apps.first { $0.0 == "org.example.browser" }?.1, "Browser")
     }
     test("keyboard help: the description in a few words") {
         func brief(_ d: String) -> String { Script.brief(d) }
@@ -452,6 +493,13 @@ func pureTests() {
         check(r.contains("event gainFocus: AXTextArea"), "events kept")
     }
 
+    test("braille: what panning on to another line moves") {
+        expect(Braille.panFollow(setting: "line", tether: "auto"), .caret, "the default: the caret goes to the line reached")
+        expect(Braille.panFollow(setting: "window", tether: "focus"), .caret, "to the text shown: the caret too")
+        expect(Braille.panFollow(setting: "off", tether: "auto"), .hold, "off: the caret stays, the line reached is held")
+        expect(Braille.panFollow(setting: "line", tether: "review"), .review, "tethered to review: the review cursor only")
+        expect(Braille.panFollow(setting: "off", tether: "review"), .review, "tethered to review, whatever the setting")
+    }
     test("braille: short forms") {
         expect(Braille.brailleText(["Save", "button"]), "Save btn")
         expect(Braille.brailleText(["Wrap", "check box", "checked"]), "Wrap chk (x)")
@@ -667,6 +715,49 @@ func pureTests() {
         let found = NSSpellChecker.shared.check(text, range: NSRange(location: 0, length: (text as NSString).length),
             types: NSTextCheckingResult.CheckingType.spelling.rawValue, options: nil, inSpellDocumentWithTag: 0, orthography: nil, wordCount: nil)
         expect(found.map(\.range.location), [0, 11], "both words, not only the first")
+    }
+    test("spelling: ordinary apps supplement partial marks without duplicating them") {
+        let text = NSMutableAttributedString(string: "Thiss is a toste of spelling ")
+        text.addAttribute(NSAttributedString.Key("AXMarkedMisspelled"), value: true, range: NSRange(location: 0, length: 6))
+        text.addAttribute(NSAttributedString.Key("AXMisspelled"), value: true, range: NSRange(location: 0, length: 5))
+        let module = AppModule(pid: 0, bundleIdentifier: "test.editor", appName: "Editor")
+        let words = EditableText.misspellingRanges(in: text, appModule: module)
+        expect(words, [NSRange(location: 0, length: 5), NSRange(location: 11, length: 5)], "trimmed app mark and the additional system result")
+        expect(EditableText.misspellingTarget(words, caret: 0, forward: true, placedHere: true)?.location, 11, "navigation reaches the unmarked error")
+    }
+    test("spelling: Word keeps its dictionary's marks in shared editing controls") {
+        BuiltInModules.register()
+        guard let type = AppModuleHandler.shared.moduleType(for: "com.microsoft.Word") else { return Harness.fail("Word's module is registered") }
+        let module = type.init(pid: 0, bundleIdentifier: "com.microsoft.Word", appName: "Word")
+        // These ranges go through EditableText's shared path, also used by dialog fields without a Word overlay.
+        for key in ["AXMarkedMisspelled", "AXMisspelled"] {
+            let text = NSMutableAttributedString(string: "Thiss is a toste of spelling ")
+            text.addAttribute(NSAttributedString.Key(key), value: true, range: NSRange(location: 0, length: 5))
+            let words = EditableText.misspellingRanges(in: text, appModule: module)
+            expect(words, [NSRange(location: 0, length: 5)], "\(key): the system checker must not add a word Word accepted")
+            expect(EditableText.misspellingTarget(words, caret: 0, forward: true, placedHere: true), nil, "no additional error after Word's mark")
+        }
+    }
+    test("spelling: Word falls back to the system checker without usable marks") {
+        BuiltInModules.register()
+        guard let type = AppModuleHandler.shared.moduleType(for: "com.microsoft.Word") else { return Harness.fail("Word's module is registered") }
+        let module = type.init(pid: 0, bundleIdentifier: "com.microsoft.Word", appName: "Word")
+        let text = NSMutableAttributedString(string: "Thiss is a toste of spelling ")
+        let expected = [NSRange(location: 0, length: 5), NSRange(location: 11, length: 5)]
+        expect(EditableText.misspellingRanges(in: text, appModule: module), expected, "no marks")
+        text.addAttribute(NSAttributedString.Key("AXMarkedMisspelled"), value: true, range: NSRange(location: 5, length: 1))
+        expect(EditableText.misspellingRanges(in: text, appModule: module), expected, "a whitespace-only mark still needs the fallback")
+    }
+    test("spelling: the module's preference controls supplementation") {
+        final class OwnDictionaryModule: AppModule {
+            override var supplementsSpellingMarks: Bool { false }
+        }
+        let text = NSMutableAttributedString(string: "Thiss is a toste of spelling ")
+        text.addAttribute(NSAttributedString.Key("AXMisspelled"), value: true, range: NSRange(location: 0, length: 5))
+        let ownDictionary = OwnDictionaryModule(pid: 0, bundleIdentifier: "test.dictionary", appName: "Dictionary")
+        expect(EditableText.misspellingRanges(in: text, appModule: ownDictionary), [NSRange(location: 0, length: 5)], "a module can trust its own dictionary")
+        let base = AppModule(pid: 0, bundleIdentifier: "com.microsoft.Word", appName: "Word")
+        expect(EditableText.misspellingRanges(in: text, appModule: base), [NSRange(location: 0, length: 5), NSRange(location: 11, length: 5)], "the bundle identifier alone does not select the preference")
     }
     test("slow drip: slow answers add up to a rest; a quiet spell starts the count again") {
         let ms: UInt64 = 1_000_000
