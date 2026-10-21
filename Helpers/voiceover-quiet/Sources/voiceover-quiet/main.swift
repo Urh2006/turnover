@@ -97,14 +97,14 @@ final class Quiet {
         // TurnOver asked it with VoiceOver already muted, and Urh had no speech until macOS gave up 90 s later).
         if !allowed {
             switch tapAndStart(process, muted: false) {
-            case .failure(let error): return error
+            case .failure(let error): return error.text
             case .success(let running): end(running)
             }
             allowed = true
             guard turnOverWord.wantsSilent else { return "off" }   // TurnOver asked for VoiceOver back while macOS asked
         }
         switch tapAndStart(process, muted: true) {
-        case .failure(let error): return error
+        case .failure(let error): return error.text
         case .success(let running): tap = running.tap; device = running.device; proc = running.proc; tappedPid = pid; turnOverWord.setMuting(true)
         }
         return "on"
