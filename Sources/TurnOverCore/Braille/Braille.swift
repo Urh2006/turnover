@@ -616,6 +616,34 @@ public enum Braille {
         Speech.speakMessage(config.braille.mode == "speechOutput" ? "braille mode display speech output" : "braille mode follow cursors")
         refresh()
     }
+    /// NVDA's braille settings scripts: each goes round its values, says the new one and shows it.
+    public enum CycledSetting { case showCursor, cursorShape, showMessages, showSelection, focusContext, panMovesCaret }
+    public static func cycleSetting(_ setting: CycledSetting) {
+        func next(_ values: [String], _ current: String) -> String { values[((values.firstIndex(of: current) ?? -1) + 1) % values.count] }
+        let said: String
+        switch setting {
+        case .showCursor:
+            config.braille.showCursor.toggle(); said = config.braille.showCursor ? "braille cursor on" : "braille cursor off"
+        case .cursorShape:
+            config.braille.cursorShape = next(["78", "8", "all"], config.braille.cursorShape)
+            said = "braille cursor " + (["78": "dots 7 and 8", "8": "dot 8", "all": "all dots"][config.braille.cursorShape] ?? "")
+        case .showMessages:
+            config.braille.showMessages = next(["timeout", "indefinitely", "off"], config.braille.showMessages)
+            said = "braille messages " + (["timeout": "use timeout", "indefinitely": "show indefinitely", "off": "disabled"][config.braille.showMessages] ?? "")
+        case .showSelection:
+            config.braille.showSelection.toggle(); said = config.braille.showSelection ? "braille show selection on" : "braille show selection off"
+        case .focusContext:
+            config.braille.focusContext = next(["changes", "scroll", "always"], config.braille.focusContext)
+            said = ["changes": "fill display for context changes", "scroll": "only when scrolling back", "always": "always fill display"][config.braille.focusContext] ?? ""
+        case .panMovesCaret:
+            config.braille.panMovesCaret = next(["line", "window", "off"], config.braille.panMovesCaret)
+            said = "panning moves the cursor " + (["line": "line by line", "window": "to the text shown", "off": "off"][config.braille.panMovesCaret] ?? "")
+        }
+        config.save()
+        Speech.speakMessage(said)
+        refresh()
+    }
+
     private static var autoScroll: Timer?
     /// NVDA+Alt+K: on to the next window by itself every few seconds; NVDA+Alt+L and J faster and slower.
     public static func toggleAutoScroll() {
