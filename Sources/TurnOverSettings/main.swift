@@ -77,7 +77,7 @@ final class Model: ObservableObject {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case speech = "Speech", keyboard = "Keyboard", documents = "Documents", webPages = "Web pages", sounds = "Sounds", general = "Starting", experimental = "Experimental"
+    case speech = "Speech", braille = "Braille", keyboard = "Keyboard", documents = "Documents", webPages = "Web pages", sounds = "Sounds", general = "Starting", experimental = "Experimental"
     var id: String { rawValue }
 }
 
@@ -94,6 +94,7 @@ struct ContentView: View {
             } else {
                 switch model.pane ?? .speech {
                 case .speech: SpeechView()
+                case .braille: BrailleView()
                 case .keyboard: KeyboardView()
                 case .documents: DocumentsView()
                 case .webPages: WebPagesView()
@@ -164,6 +165,73 @@ struct SpeechView: View {
                 }
             }
         }.formStyle(.grouped).navigationTitle("Speech")
+    }
+}
+
+/// NVDA's braille settings, as TurnOver has them (the TurnOver menu's Braille has the same).
+struct BrailleView: View {
+    @EnvironmentObject var model: Model
+    private var tables: [[String]] { model.special("_brailleTables") as? [[String]] ?? [] }
+    private func shapes(_ title: String, _ key: String, _ fallback: String) -> some View {
+        Picker(title, selection: model.string("braille", key, fallback)) {
+            Text("Dots 7 and 8").tag("78"); Text("Dot 8").tag("8"); Text("All dots").tag("all")
+        }
+    }
+    var body: some View {
+        Form {
+            Section("Text") {
+                Picker("Braille table", selection: model.string("braille", "table", "")) {
+                    Text("The system's for my language").tag("")
+                    ForEach(tables.filter { $0.count == 2 }, id: \.[0]) { t in Text(t[1]).tag(t[0]) }
+                }
+                Toggle("Show the word at the cursor uncontracted", isOn: model.bool("braille", "expandAtCursor"))
+                Toggle("Keep words whole", isOn: model.bool("braille", "wordWrap"))
+                Toggle("Read by paragraph", isOn: model.bool("braille", "readByParagraph"))
+            }
+            Section("Following") {
+                Picker("Braille follows", selection: model.string("braille", "tether", "auto")) {
+                    Text("Automatically").tag("auto"); Text("The focus").tag("focus"); Text("The review cursor").tag("review")
+                }
+                Picker("Braille mode", selection: model.string("braille", "mode", "followCursors")) {
+                    Text("Follow the cursors").tag("followCursors"); Text("Show what is spoken").tag("speechOutput")
+                }
+                Picker("Focus context", selection: model.string("braille", "focusContext", "changes")) {
+                    Text("Fill the display when the context changes").tag("changes"); Text("Only when panning back").tag("scroll"); Text("Always fill the display").tag("always")
+                }
+                Picker("Panning moves the cursor", selection: model.string("braille", "panMovesCaret", "line")) {
+                    Text("Line by line").tag("line"); Text("To the text shown").tag("window"); Text("Off").tag("off")
+                }
+                Toggle("Stop speech while panning", isOn: model.bool("braille", "interruptSpeechWhileScrolling"))
+                Toggle("Speak the character when routing", isOn: model.bool("braille", "speakCharacterOnRouting"))
+            }
+            Section("Cursor") {
+                Toggle("Show the cursor", isOn: model.bool("braille", "showCursor"))
+                Toggle("Blink", isOn: model.bool("braille", "blinkCursor"))
+                Stepper("Blink rate: \(model.number("braille", "blinkRateMs").wrappedValue, specifier: "%.0f") milliseconds",
+                        value: model.number("braille", "blinkRateMs"), in: 200...2000, step: 100)
+                shapes("Cursor shape", "cursorShape", "78")
+                shapes("Review cursor shape", "cursorShapeReview", "8")
+                Toggle("Selection with dots 7 and 8", isOn: model.bool("braille", "showSelection"))
+            }
+            Section("Messages") {
+                Picker("Messages on the display", selection: model.string("braille", "showMessages", "timeout")) {
+                    Text("For a time").tag("timeout"); Text("Until a key is pressed").tag("indefinitely"); Text("Off").tag("off")
+                }
+                Stepper("Message time: \(model.number("braille", "messageSeconds").wrappedValue, specifier: "%.0f") seconds",
+                        value: model.number("braille", "messageSeconds"), in: 1...30, step: 1)
+            }
+            Section("Braille keyboard") {
+                Picker("Typing", selection: model.bool("braille", "contractedInput")) {
+                    Text("Contracted, a word at a time").tag(true); Text("Uncontracted, letter by letter").tag(false)
+                }
+                Picker("Speak braille typing", selection: model.string("braille", "inputEcho", "words")) {
+                    Text("Words").tag("words"); Text("Characters").tag("characters"); Text("Characters and words").tag("both"); Text("Off").tag("off")
+                }
+            }
+            Section("Displays") {
+                Toggle("Look for a display paired over Bluetooth", isOn: model.bool("braille", "bluetooth"))
+            }
+        }.formStyle(.grouped).navigationTitle("Braille")
     }
 }
 

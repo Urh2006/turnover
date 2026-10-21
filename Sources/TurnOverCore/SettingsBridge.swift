@@ -40,9 +40,20 @@ public enum SettingsBridge {
         dict["_kokoroVoice"] = KokoroVoice.voice
         dict["_kokoroSpeed"] = KokoroVoice.speed
         dict["_coexist"] = Coexist.wouldBeOn
+        dict["_brailleTables"] = brailleTables
         guard let out = try? JSONSerialization.data(withJSONObject: dict), let s = String(data: out, encoding: .utf8) else { return }
         if let reply { reply(["op": "state", "json": s]) } else { ControlServer.shared.broadcast(["op": "state", "json": s]) }
     }
+
+    /// The braille tables, as [identifier, name] pairs: the user's language's first, then every other language's,
+    /// named with the language. Read once (going through every language's tables takes a moment).
+    private static let brailleTables: [[String]] = {
+        var out = TOBrailleTranslatorTables.forUser().map { [$0.id, $0.name] }
+        for lang in TOBrailleTranslatorTables.otherLanguages() {
+            out += lang.tables.map { [$0.id, "\(lang.language): \($0.name)"] }
+        }
+        return out
+    }()
 
     static func apply(_ json: String) {
         guard let data = json.data(using: .utf8), let patch = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
