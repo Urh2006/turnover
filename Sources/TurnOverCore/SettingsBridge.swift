@@ -89,11 +89,14 @@ public enum SettingsBridge {
             }
             let bluetoothWas = config.braille.bluetooth, autoScrollWas = config.braille.autoScrollSeconds, messagesWere = config.braille.showMessages
             let blinkWas = config.braille.blinkRateMs
+            let keysWere = (config.general.keyboardStyle, config.general.windowsKeysEverywhere)
             config = next
             config.save()
             SettingsProfiles.applyLive()
             KeySettings.refresh()
             TurnOverMenu.shared.onGeneralChanged?()
+            // The key layer where VoiceOver reads follows the style and its own setting, as from the menu.
+            if keysWere != (config.general.keyboardStyle, config.general.windowsKeysEverywhere) { GlobalCommands.onKeyboardStyleChanged?() }
             // As the menu's toggle does: look for the paired display now, not only when no display is in use.
             if config.braille.bluetooth, !bluetoothWas { BrailleDisplays.shared.lookNow() }
             if config.braille.autoScrollSeconds != autoScrollWas { Braille.autoScrollIntervalChanged() }

@@ -6,6 +6,9 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 
 ### Fixed
 
+- With NVDA or JAWS keys, VoiceOver's own Caps Lock keys work again where VoiceOver reads (VO-F7, VO-F8, VO-M):
+  the layer that turns Caps Lock into the NVDA key there now runs only with the new TurnOver menu item Keyboard,
+  Windows keys where VoiceOver reads (also in Settings, Keyboard). Its setting existed but was never read.
 - VoiceOver is no longer left silent while macOS asks for permission to record audio (after TurnOver is re-signed or
   reinstalled): it reads the question out, and TurnOver taking over or quitting while it is open gives VoiceOver back
   at once instead of after 90 seconds.

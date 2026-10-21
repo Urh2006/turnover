@@ -248,6 +248,7 @@ struct KeyboardView: View {
             Picker("Keyboard style", selection: model.string("general", "keyboardStyle", "mac")) {
                 Text("VoiceOver keys").tag("mac"); Text("NVDA keys").tag("windows"); Text("JAWS keys").tag("jaws")
             }
+            Toggle("Windows keys where VoiceOver reads", isOn: model.bool("general", "windowsKeysEverywhere"))
             Picker("TurnOver key", selection: model.string("general", "bosunKey", "both")) {
                 Text("Caps Lock or Control Option").tag("both"); Text("Caps Lock").tag("caps"); Text("Control Option").tag("controlOption")
             }

@@ -886,6 +886,8 @@ public final class TurnOverMenu {
             MenuItem("Keyboard style", .cycle(options: GlobalCommands.offeredStyles.map(\.spokenName),
                 get: { GlobalCommands.offeredStyles.firstIndex(of: config.general.style) ?? 0 },
                 set: { i in if GlobalCommands.offeredStyles.indices.contains(i), GlobalCommands.offeredStyles[i] != config.general.style { GlobalCommands.setKeyboardStyle(GlobalCommands.offeredStyles[i]) } }), hint: "Command Control Comma, then K, goes round them"),
+            MenuItem("Windows keys where VoiceOver reads", .toggle(get: { config.general.windowsKeysEverywhere }, set: { config.general.windowsKeysEverywhere = $0; GlobalCommands.onKeyboardStyleChanged?() }),
+                     hint: "In the NVDA or JAWS style, Caps Lock is the screen reader key where VoiceOver reads too. Off, VoiceOver's own keys work there"),
             MenuItem("Keypad commands, Mac style", .toggle(get: { config.keyboard.numpadCommander }, set: { config.keyboard.numpadCommander = $0; KeySettings.refresh() }),
                      hint: "VoiceOver's NumPad Commander: the keypad runs VoiceOver's commands. VO Clear switches"),
             MenuItem("Keypad commands, Windows style", .toggle(get: { config.keyboard.keypadCommands }, set: { config.keyboard.keypadCommands = $0; KeySettings.refresh() }),
