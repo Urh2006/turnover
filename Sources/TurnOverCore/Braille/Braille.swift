@@ -384,9 +384,14 @@ public enum Braille {
             let contextChanged = context != lastContextText || !sameElements(contextElements, lastContextElements)
             // The focus context setting changed on the same item: placed again under the new setting.
             let modeChanged = config.braille.focusContext != lastContextMode
-            if objectChanged || contextChanged || modeChanged || !wasShowingObject {
-                let n = display?.cellCount ?? 40
-                let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && contextChanged)
+            // The braille table or the display changed under the same item: the old anchor counts the old cells.
+            let n = display?.cellCount ?? 40
+            let layoutChanged = objectStartCell != lastObjectStartCell || cells.count != lastCellCount || n != lastCellWidth
+            let wasFilled = objectAnchor < lastObjectStartCell
+            if objectChanged || contextChanged || modeChanged || layoutChanged || !wasShowingObject {
+                // (A layout change alone keeps the context shown if it was.)
+                let kept = layoutChanged && !objectChanged && !contextChanged && !modeChanged && wasShowingObject && wasFilled
+                let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && (contextChanged || kept))
                 // Filling the display: as much context as fits in front of the item, the item whole at the end.
                 objectAnchor = fill && cells.count - objectStartCell <= n ? max(0, cells.count - n) : objectStartCell
                 // With words kept whole, the filled display starts at a word, not inside one.
@@ -399,6 +404,7 @@ public enum Braille {
             }
             lastObject = obj; lastObjectText = own; lastContextText = context; lastContextElements = contextElements
             lastContextMode = config.braille.focusContext
+            lastObjectStartCell = objectStartCell; lastCellCount = cells.count; lastCellWidth = n
             windows = windowStarts(from: objectAnchor)
             if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
         } else {
@@ -420,6 +426,9 @@ public enum Braille {
     private static var lastObjectText = ""
     private static var lastContextText = ""
     private static var lastContextMode = ""
+    private static var lastObjectStartCell = 0
+    private static var lastCellCount = 0
+    private static var lastCellWidth = 0
     /// The ancestors the context was last read from. Its words are read fresh each time: a dialog keeps its element
     /// when its title changes, and a list its element when its name or position does.
     private static var contextElements: [AXUIElement] = []
