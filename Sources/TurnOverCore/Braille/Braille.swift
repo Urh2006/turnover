@@ -79,21 +79,28 @@ public enum Braille {
     /// the last space before it instead (unless the word is longer than the display).
     private static var windows: [Int] = [0]
 
-    private static func windowStarts() -> [Int] {
+    private static func windowStarts(from anchor: Int = 0) -> [Int] {
         let n = display?.cellCount ?? 40
-        var starts: [Int] = [], s = 0
-        while s < max(cells.count, 1) {
-            starts.append(s)
-            var e = min(s + n, cells.count)
-            if config.braille.wordWrap, e < cells.count, cells[e] & 0x3F != 0, cells[e - 1] & 0x3F != 0,
+        // Where the window starting at s ends, no further than limit.
+        func end(_ s: Int, limit: Int) -> Int {
+            var e = min(s + n, limit)
+            if config.braille.wordWrap, e < limit, cells[e] & 0x3F != 0, cells[e - 1] & 0x3F != 0,
                let space = (s + 1..<e).last(where: { cells[$0] & 0x3F == 0 }) {
                 e = space + 1
             }
             // The next window starts at the next word: blanks at a break are skipped.
-            while e < cells.count, cells[e] & 0x3F == 0, config.braille.wordWrap { e += 1 }
+            while e < limit, cells[e] & 0x3F == 0, config.braille.wordWrap { e += 1 }
             if e <= s { e = s + n }
-            s = e
+            return e
         }
+        // Before the anchor (the focus with its context in front of it): the same windows from the start, the last
+        // ending at the anchor. Whole display widths back from it split context words with word wrap on (code
+        // review, 21 Oct 2026).
+        let at = min(anchor, max(0, cells.count - 1))
+        var starts: [Int] = [], s = 0
+        while s < at { starts.append(s); s = min(end(s, limit: at), at) }
+        s = at
+        while s < max(cells.count, 1) { starts.append(s); s = end(s, limit: cells.count) }
         return starts
     }
 
@@ -165,10 +172,24 @@ public enum Braille {
         if wasPrivate { Speech.asPrivate { Speech.speakText(s) } } else { Speech.speakText(s) }
         source = .message
         messagePrivate = wasPrivate   // a two-factor code, a copied password: never in the log
-        text = s.replacingOccurrences(of: "\n", with: " "); cursor = nil; windowStart = 0; selection = nil
+        text = displayed(s); cursor = nil; windowStart = 0; selection = nil
         layout()
         messageUntil = .distantFuture
         show()
+    }
+
+    /// Text as the display gets it: every line break, control character and object placeholder becomes a blank cell,
+    /// one for one, so offsets still match the text's. A table with no cell for them showed its "unknown" sign at the
+    /// end of every line (VoiceOver's Slovenian table, reported 20 Oct 2026); U+2028, U+2029 and U+FFFC reached the
+    /// translator before.
+    public static func displayed(_ s: String) -> String {
+        guard s.utf16.contains(where: isBlankOnDisplay) else { return s }
+        let units = s.utf16.map { isBlankOnDisplay($0) ? 0x20 : $0 }
+        return String(decoding: units, as: UTF16.self)
+    }
+
+    private static func isBlankOnDisplay(_ u: UInt16) -> Bool {
+        u < 0x20 || (0x7F...0x9F).contains(u) || u == 0x2028 || u == 0x2029 || u == 0xFFFC
     }
 
     // MARK: Short forms (NVDA: braille.roleLabels and positiveStateLabels)
@@ -216,7 +237,7 @@ public enum Braille {
 
     public static func item(_ s: String) {
         // (Commas kept: a message or a chat's name has its own.)
-        let t = brailleText(s.replacingOccurrences(of: "\n", with: " ").components(separatedBy: ", "), separator: ", ")
+        let t = brailleText(displayed(s).components(separatedBy: ", "), separator: ", ")
         let focus = API.focusObject?.element
         let caret = API.caretObject.flatMap { try? $0.makeTextInfo(.caret) }?.start
         let changed = heldItem?.text != t
@@ -261,7 +282,7 @@ public enum Braille {
         guard historyIndex == nil else { return }
         guard let d = display, !s.isEmpty, config.braille.showMessages != "off" else { return }
         source = .message
-        text = s.replacingOccurrences(of: "\n", with: " "); cursor = nil; windowStart = 0; selection = nil
+        text = displayed(s); cursor = nil; windowStart = 0; selection = nil
         layout()
         let widths = Double((cells.count + d.cellCount - 1) / max(d.cellCount, 1))
         holdMessage(min(300, Double(max(1, config.braille.messageSeconds)) * max(1, widths)))
@@ -283,10 +304,11 @@ public enum Braille {
         guard display != nil else { return }
         if let until = messageUntil, Date() < until { return }
         messageUntil = nil
+        showingReview = false
         if let m = modalLine?() {
-            let changed = !modalShowing || text != m.0.replacingOccurrences(of: "\n", with: " ")
+            let changed = !modalShowing || text != displayed(m.0)
             source = .message; modalShowing = true
-            text = m.0.replacingOccurrences(of: "\n", with: " "); cursor = m.1; selection = nil
+            text = displayed(m.0); cursor = m.1; selection = nil
             layout()
             if changed { windowStart = 0 }
             if let c = cursorCell, c < windowStart || c >= windowEnd(windowStart) { windowStart = window(containing: c) }
@@ -298,8 +320,8 @@ public enum Braille {
         // NVDA's "display speech output": the display shows what was last spoken.
         if config.braille.mode == "speechOutput" {
             let said = Speech.lastSpoken
-            let fresh = text != said
-            source = .message; text = said; cursor = nil; selection = nil
+            let fresh = text != displayed(said)
+            source = .message; text = displayed(said); cursor = nil; selection = nil
             layout()
             if fresh { windowStart = 0 }
             if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
@@ -321,11 +343,18 @@ public enum Braille {
         // Tethered to review: the review cursor's line (NVDA's "tether to review"); else the caret's.
         let reviewed = config.braille.tether == "review" ? TextReview.current() : nil
         if let caret = reviewed ?? API.caretObject.flatMap({ hasText($0) ? try? $0.makeTextInfo(.caret) : nil }) {
-            let line = caret.copy(); line.expand(.line)
+            // Panned on with "Panning moves the cursor" off: the line reached, until the caret moves.
+            var shown = caret
+            if reviewed == nil, let h = heldLine {
+                if h.caret == caret.start, h.info.obj.isSameElement(as: caret.obj) { shown = h.info.copy() } else { heldLine = nil }
+            }
+            let line = shown.copy(); line.expand(readingUnit)
             source = .text(line, lineStart: line.start)
-            text = line.text.replacingOccurrences(of: "\r\n", with: " ").replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
-            cursor = caret.start - line.start
-            selection = caret.selectionOffsets().map { ($0.0 - line.start, $0.1 - line.start) }
+            showingReview = reviewed != nil
+            text = displayed(line.text)
+            let caretHere = caret.start >= line.start && caret.start <= line.end
+            cursor = caretHere ? caret.start - line.start : nil
+            selection = caretHere ? caret.selectionOffsets().map { ($0.0 - line.start, $0.1 - line.start) } : nil
             layout()
             // The window follows the caret only when the caret moves (or typing grows the word): panning leaves the
             // caret behind on purpose, and an unrelated refresh must not pull the window back to it.
@@ -339,16 +368,81 @@ public enum Braille {
             // A list, table or outline: its selected item, as speech reads it (Mail's list showed only "message
             // table", 6 Oct 2026).
             let obj = selectedItem(in: focus) ?? focus
+            let wasShowingObject: Bool = { if case .object = source { return true }; return false }()
             source = .object(obj)
-            text = brailleText(Speech.objectPropertiesSpeech(obj, reason: .focus))
+            let own = brailleText(Speech.objectPropertiesSpeech(obj, reason: .focus))
+            let context = focusContext(focus: focus, item: obj)
+            // (Line breaks and placeholders in a name or the context as blank cells, as in text, one for one.)
+            text = displayed(context.isEmpty ? own : context + " " + own)
             cursor = nil; selection = nil
-            windowStart = 0
             layout()
+            let ownStart = (text as NSString).length - (own as NSString).length
+            objectStartCell = cellMap.firstIndex { $0 >= ownStart } ?? 0
+            // Placed again only when the item or its context changed: panning back into the context stays put.
+            let objectChanged = !(lastObject?.isSameElement(as: obj) ?? false) || own != lastObjectText
+            // Two containers can read alike ("lst" and "lst"): the change is in the elements as well as the words.
+            let contextChanged = context != lastContextText || !sameElements(contextElements, lastContextElements)
+            // The focus context setting changed on the same item: placed again under the new setting.
+            let modeChanged = config.braille.focusContext != lastContextMode
+            // The braille table or the display changed under the same item: the old anchor counts the old cells.
+            let n = display?.cellCount ?? 40
+            let layoutChanged = objectStartCell != lastObjectStartCell || cells.count != lastCellCount || n != lastCellWidth
+            let wasFilled = objectAnchor < lastObjectStartCell
+            if objectChanged || contextChanged || modeChanged || layoutChanged || !wasShowingObject {
+                // (A layout change alone keeps the context shown if it was.)
+                let kept = layoutChanged && !objectChanged && !contextChanged && !modeChanged && wasShowingObject && wasFilled
+                let fill = config.braille.focusContext == "always" || (config.braille.focusContext == "changes" && (contextChanged || kept))
+                // Filling the display: as much context as fits in front of the item, the item whole at the end.
+                objectAnchor = fill && cells.count - objectStartCell <= n ? max(0, cells.count - n) : objectStartCell
+                // With words kept whole, the filled display starts at a word, not inside one.
+                if config.braille.wordWrap, objectAnchor > 0, objectAnchor < objectStartCell,
+                   cells[objectAnchor - 1] & 0x3F != 0, cells[objectAnchor] & 0x3F != 0,
+                   let space = (objectAnchor..<objectStartCell).first(where: { cells[$0] & 0x3F == 0 }) {
+                    objectAnchor = space + 1
+                }
+                windowStart = objectAnchor
+            }
+            lastObject = obj; lastObjectText = own; lastContextText = context; lastContextElements = contextElements
+            lastContextMode = config.braille.focusContext
+            lastObjectStartCell = objectStartCell; lastCellCount = cells.count; lastCellWidth = n
+            windows = windowStarts(from: objectAnchor)
+            if !windows.contains(windowStart) { windowStart = window(containing: windowStart) }
         } else {
             source = nil; text = ""; cursor = nil; selection = nil; windowStart = 0
             layout()
         }
         show()
+    }
+
+    // MARK: Focus context (NVDA: focus context presentation)
+    //
+    // The containers the focus is in (a dialog, a list, a toolbar), in NVDA's short forms, in front of the item:
+    // "dlg Save lst Files sel 3 of 12". "changes" fills the display with them when the context changes (NVDA's
+    // default), "scroll" only shows them on panning back, "always" fills the display every time.
+
+    private static var objectStartCell = 0
+    private static var objectAnchor = 0
+    private static var lastObject: TurnOverObject?
+    private static var lastObjectText = ""
+    private static var lastContextText = ""
+    private static var lastContextMode = ""
+    private static var lastObjectStartCell = 0
+    private static var lastCellCount = 0
+    private static var lastCellWidth = 0
+    /// The ancestors the context was last read from. Its words are read fresh each time: a dialog keeps its element
+    /// when its title changes, and a list its element when its name or position does.
+    private static var contextElements: [AXUIElement] = []
+    private static var lastContextElements: [AXUIElement] = []
+
+    private static func sameElements(_ a: [AXUIElement], _ b: [AXUIElement]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { CFEqual($0, $1) }
+    }
+
+    private static func focusContext(focus: TurnOverObject, item: TurnOverObject) -> String {
+        var chain = API.focusAncestors.reversed().filter { $0.isPresentableFocusAncestor && $0.role != .application }
+        if !item.isSameElement(as: focus) { chain.append(focus) }
+        contextElements = chain.map(\.element)
+        return chain.map { brailleText(Speech.objectPropertiesSpeech($0, reason: .focusEntered)) }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private static func selectedItem(in obj: TurnOverObject) -> TurnOverObject? {
@@ -366,7 +460,14 @@ public enum Braille {
     }
 
     /// The cursor's dots (NVDA: cursor shape), and whether the blink has it showing now.
-    private static var cursorDots: UInt8 { ["8": 0x80, "all": 0xFF][config.braille.cursorShape] ?? 0xC0 }
+    private static var cursorDots: UInt8 {
+        let shape = showingReview ? config.braille.cursorShapeReview : config.braille.cursorShape
+        return ["8": 0x80, "all": 0xFF][shape] ?? 0xC0
+    }
+    /// The display shows the review cursor's line (NVDA: its own cursor shape).
+    private static var showingReview = false
+    /// NVDA: read by paragraph; the display's line keys and panning move by paragraph instead of by line.
+    private static var readingUnit: TextUnit { config.braille.readByParagraph ? .paragraph : .line }
     private static var blinkOn = true
     private static var blinkTimer: Timer?
 
@@ -400,6 +501,13 @@ public enum Braille {
         }
         lastWritten = window
         d.write(window)
+    }
+
+    /// A new blink rate takes effect at once: a running timer kept the old one (code review, 21 Oct 2026).
+    public static func blinkRateChanged() {
+        guard let t = blinkTimer else { return }
+        t.invalidate(); blinkTimer = nil
+        updateBlink()
     }
 
     /// The cursor blinks while it is in view (NVDA: cursor blink rate).
@@ -542,6 +650,37 @@ public enum Braille {
         Speech.speakMessage(config.braille.mode == "speechOutput" ? "braille mode display speech output" : "braille mode follow cursors")
         refresh()
     }
+    /// Messages just turned off: a message held until a key press would otherwise stay up.
+    public static func dropHeldMessage() { messageUntil = nil }
+    /// NVDA's braille settings scripts: each goes round its values, says the new one and shows it.
+    public enum CycledSetting { case showCursor, cursorShape, showMessages, showSelection, focusContext, panMovesCaret }
+    public static func cycleSetting(_ setting: CycledSetting) {
+        func next(_ values: [String], _ current: String) -> String { values[((values.firstIndex(of: current) ?? -1) + 1) % values.count] }
+        let said: String
+        switch setting {
+        case .showCursor:
+            config.braille.showCursor.toggle(); said = config.braille.showCursor ? "braille cursor on" : "braille cursor off"
+        case .cursorShape:
+            config.braille.cursorShape = next(["78", "8", "all"], config.braille.cursorShape)
+            said = "braille cursor " + (["78": "dots 7 and 8", "8": "dot 8", "all": "all dots"][config.braille.cursorShape] ?? "")
+        case .showMessages:
+            config.braille.showMessages = next(["timeout", "indefinitely", "off"], config.braille.showMessages)
+            said = "braille messages " + (["timeout": "use timeout", "indefinitely": "show indefinitely", "off": "disabled"][config.braille.showMessages] ?? "")
+            if config.braille.showMessages == "off" { dropHeldMessage() }
+        case .showSelection:
+            config.braille.showSelection.toggle(); said = config.braille.showSelection ? "braille show selection on" : "braille show selection off"
+        case .focusContext:
+            config.braille.focusContext = next(["changes", "scroll", "always"], config.braille.focusContext)
+            said = ["changes": "fill display for context changes", "scroll": "only when scrolling back", "always": "always fill display"][config.braille.focusContext] ?? ""
+        case .panMovesCaret:
+            config.braille.panMovesCaret = next(["line", "window", "off"], config.braille.panMovesCaret)
+            said = "panning moves the cursor " + (["line": "line by line", "window": "to the text shown", "off": "off"][config.braille.panMovesCaret] ?? "")
+        }
+        config.save()
+        Speech.speakMessage(said)
+        refresh()
+    }
+
     private static var autoScroll: Timer?
     /// NVDA+Alt+K: on to the next window by itself every few seconds; NVDA+Alt+L and J faster and slower.
     public static func toggleAutoScroll() {
@@ -556,6 +695,8 @@ public enum Braille {
             MainActor.assumeIsolated { if display != nil { pan(forward: true) } else { autoScroll?.invalidate(); autoScroll = nil } }
         }
     }
+    /// The interval changed in TurnOver Settings: a running auto scroll takes it at once.
+    public static func autoScrollIntervalChanged() { if autoScroll != nil { startAutoScroll() } }
     public static func autoScrollRate(faster: Bool) {
         config.braille.autoScrollSeconds = max(0.5, min(20, config.braille.autoScrollSeconds + (faster ? -0.5 : 0.5))); config.save()
         if autoScroll != nil { startAutoScroll() }
@@ -565,7 +706,7 @@ public enum Braille {
     private static func pan(forward: Bool) {
         if config.braille.interruptSpeechWhileScrolling { Speech.cancel() }
         if let next = forward ? windows.first(where: { $0 > windowStart }) : windows.last(where: { $0 < windowStart }) {
-            windowStart = next; show(); return
+            windowStart = next; show(); caretToWindow(); return
         }
         // Off the end of the line: on to the next or previous line (NVDA's scrollForward and scrollBack). On an item,
         // panning stays on it (up and down move between items).
@@ -585,15 +726,43 @@ public enum Braille {
         guard case .text(let info, _) = source else { press(direction > 0 ? "downArrow" : "upArrow"); return }
         let r = info.copy()
         r.collapse()
-        guard r.move(.line, direction) != 0 else { Tones.edge(); return }
-        r.updateCaret()
+        guard r.move(readingUnit, direction) != 0 else { Tones.edge(); return }
+        // The caret follows the display (Panning moves the cursor), so the arrows carry on from the line read on the
+        // display, not from where reading began (VoiceOver left the caret behind: a tester, 21 Oct 2026).
+        switch panFollow(setting: config.braille.panMovesCaret, tether: config.braille.tether) {
+        case .review: TextReview.set(r)
+        case .caret: r.updateCaret(); heldLine = nil
+        case .hold: if let c = API.caretObject.flatMap({ try? $0.makeTextInfo(.caret) })?.start { heldLine = (r.copy(), c) }
+        }
         // The line is spoken as well as shown, as VoiceOver does (the display moved on silently, 6 Oct 2026).
         SayAll.stop()
         Speech.cancel()
-        let spoken = r.copy(); spoken.expand(.line)
-        Speech.speakTextInfo(spoken, unit: .line, reason: .caret)
+        let spoken = r.copy(); spoken.expand(readingUnit)
+        Speech.speakTextInfo(spoken, unit: readingUnit, reason: .caret)
         refresh()
-        if toEnd { windowStart = windows.last ?? 0; show() }
+        if toEnd { windowStart = windows.last ?? 0; show(); caretToWindow() }
+    }
+
+    /// The line reached by panning with "Panning moves the cursor" off, and the caret then: shown until the caret moves.
+    private static var heldLine: (info: TextInfo, caret: Int)?
+
+    /// What panning on to another line moves. Tethered to review, the review cursor only, as NVDA's braille does, and
+    /// the caret stays where it is; otherwise the caret, unless "Panning moves the cursor" is off, when the display
+    /// holds the line reached until the caret moves.
+    public enum PanFollow: Equatable { case review, caret, hold }
+    public static func panFollow(setting: String, tether: String) -> PanFollow {
+        if tether == "review" { return .review }
+        return setting == "off" ? .hold : .caret
+    }
+
+    /// "Panning moves the cursor" set to the text shown: the caret goes to the start of each display's width of the
+    /// line as it is panned to, so the arrows and typing carry on from exactly what was read.
+    private static func caretToWindow() {
+        guard config.braille.panMovesCaret == "window", case .text(let info, let lineStart) = source,
+              windowStart < cellMap.count else { return }
+        let r = info.copy()
+        r.start = lineStart + cellMap[windowStart]; r.end = r.start
+        if panFollow(setting: config.braille.panMovesCaret, tether: config.braille.tether) == .review { TextReview.set(r) } else { r.updateCaret() }
     }
 
     private static func onActionable(_ e: AXUIElement?) -> Bool {
@@ -625,14 +794,23 @@ public enum Braille {
             let offset = cell < cellMap.count ? cellMap[cell] : (text as NSString).length
             r.start = lineStart + offset; r.end = r.start
             r.updateCaret()
+            if config.braille.tether == "review" || showingReview { TextReview.set(r) }
             // Only on a link or button: plain text has nothing to press, and saying so at every routing key would wear.
-            if let d = API.focusTreeInterceptor, !d.passThrough, let b = r as? BufferTextInfo, onActionable(b.element(at: r.start)),
-               let s = ScriptHandler.findScript(named: "activatePosition") {
-                _ = d
-                s.handler(KeyboardGesture(keyCode: 36, modifiers: [], characters: "\r", timestamp: 0, isRepeat: false, flags: []))
+            var activate: Script?
+            if let d = API.focusTreeInterceptor, !d.passThrough, let b = r as? BufferTextInfo, onActionable(b.element(at: r.start)) {
+                activate = ScriptHandler.findScript(named: "activatePosition")
             }
+            // NVDA: speak the character when routing the cursor in text (not when the key presses a link instead).
+            if config.braille.speakCharacterOnRouting, activate == nil {
+                Speech.cancel()
+                let ch = r.copy(); ch.expand(.character)
+                Speech.speakTextInfo(ch, unit: .character, reason: .caret)
+            }
+            activate?.handler(KeyboardGesture(keyCode: 36, modifiers: [], characters: "\r", timestamp: 0, isRepeat: false, flags: []))
             refresh()
         case .object(let obj):
+            // A routing key over the context in front of the item: nothing to press there.
+            guard cell >= objectStartCell else { Log.io("braille: routing on the focus context"); return }
             _ = AXUIElementPerformAction(obj.element, kAXPressAction as CFString)
         case .item:
             // TurnOver's cursor item: a routing key opens or presses it, as Return does.

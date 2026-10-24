@@ -10,6 +10,11 @@ NS_ASSUME_NONNULL_BEGIN
 @interface TOAppleBrailleDisplay : NSObject
 /// Every display connected now that one of the drivers takes (USB and HID, including HID over Bluetooth).
 + (NSArray<TOAppleBrailleDisplay *> *)detect;
+/// What the last `detect` saw: each connected device a driver claims, and whether its driver loaded, for TurnOver's log.
+@property (class, readonly) NSString *lastDetectReport;
+/// The last `detect` found a device a driver claims, but no driver would load for it (another process, such as
+/// VoiceOver's braille server, may hold it).
+@property (class, readonly) BOOL lastDetectFoundUnopened;
 /// Displays paired with the Mac over Bluetooth whose names a driver lists (asks for Bluetooth permission once).
 /// Connecting takes a few seconds, on TurnOver's braille thread; the answer comes back on the main thread.
 + (void)detectBluetoothWithCompletion:(void (^)(TOAppleBrailleDisplay *_Nullable display))completion;
@@ -19,15 +24,22 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) NSString *driverName;        // "BrailleConnect"
 @property (readonly) NSInteger cellCount;
 @property (readonly) BOOL isLoaded;
-/// Connected over Bluetooth (its driver lives on the braille thread).
+/// Connected over Bluetooth.
 @property (readonly) BOOL isBluetooth;
 /// Cells as ISO 11548-1 bytes (dot n is bit n-1).
 - (BOOL)writeCells:(NSData *)cells;
+/// The same without waiting: written on the braille thread, frames sent faster than the display takes them give way
+/// to the latest; whether the display took it comes back on the main queue.
+- (void)writeCellsAsync:(NSData *)cells completion:(void (^)(BOOL ok))completion;
+/// Keys read on the braille thread every 30 ms; events, and the driver gone (loaded NO), come back on the main queue.
+- (void)startPollingWithHandler:(void (^)(NSArray<NSNumber *> *events, BOOL loaded))handler;
 /// Key events since the last call: bit 16 set while pressed, bits 8-15 the key, bits 0-7 its kind
 /// (0 routing key, 1 display key, 2 braille keyboard, 3 status routing key).
 - (NSArray<NSNumber *> *)readInputEvents;
 /// The model's key table: input identifier (pressed) to VoiceOver command ("SCRBraille.panLeft").
 @property (readonly) NSDictionary<NSNumber *, NSString *> *keyCommands;
+/// The model's chords: "first.second" input identifiers (pressed) to VoiceOver command.
+@property (readonly) NSDictionary<NSString *, NSString *> *chordCommands;
 - (void)close;
 @end
 

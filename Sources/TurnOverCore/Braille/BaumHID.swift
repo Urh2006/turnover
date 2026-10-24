@@ -60,6 +60,10 @@ public final class BrailleDisplays {
     private var bluetoothLooking = false
 
     private func useApple() -> Bool {
+        // While a Bluetooth display is connecting (up to 8 s, on the braille thread), a USB display found would wait
+        // to load behind it, and the main thread with it (code review, 21 Oct 2026): it is looked for the moment the
+        // attempt ends.
+        guard !bluetoothLooking else { return false }
         // Bluetooth only when asked for, and not more than every 15 s (connecting takes a few seconds, on the
         // braille thread; the answer comes back here).
         // Just after VoiceOver's braille server let go, the display can take a few seconds to be free: look again
@@ -79,22 +83,67 @@ public final class BrailleDisplays {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.bluetoothLooking = false
+                    // The next attempt counts from this one's end, so the USB scan always has time between attempts.
+                    self.lastBluetoothLook = Date()
                     Log.info("braille: Bluetooth: \(TOAppleBrailleDisplay.lastBluetoothReport)")
-                    guard let found, self.apple == nil, self.lookAgain != nil || self.manager != nil else { found?.close(); return }
-                    self.adopt(found)
-                    self.stopOwn()
+                    guard self.apple == nil, self.lookAgain != nil || self.manager != nil else { found?.close(); return }
+                    if let found { self.adopt(found); self.stopOwn(); return }
+                    // A USB display plugged in while Bluetooth was connecting is looked for now, not at the next scan.
+                    if let usb = TOAppleBrailleDisplay.detect().first { self.adopt(usb); self.stopOwn() }
                 }
             }
             }
         }
-        guard let d = TOAppleBrailleDisplay.detect().first else { return false }
+        guard let d = TOAppleBrailleDisplay.detect().first else { noteUnopened(); return false }
         adopt(d)
         return true
     }
 
+    /// A display a driver claims but couldn't load: with VoiceOver off, its braille server (scrod) can still hold a USB
+    /// display too, showing "VoiceOver off" for ever (a Focus 5 by USB with CoExist off, 20 Oct 2026). Ask scrod to
+    /// quit and look again; if the display still won't open, say so once, as nothing on the display can.
+    private var lastDetectReport: String?   // nil until the first look, which is always logged, even finding nothing
+    private var lastUSBFree = Date.distantPast
+    private var retryPending = false
+    private var toldUnopened = false
+
+    private func noteUnopened() {
+        let report = TOAppleBrailleDisplay.lastDetectReport
+        if report != lastDetectReport {
+            lastDetectReport = report
+            Log.info("braille: looked for displays:\(report.isEmpty ? " none connected that a driver claims" : report)")
+        }
+        guard TOAppleBrailleDisplay.lastDetectFoundUnopened else { return }
+        // VoiceOver still on (a hand-over under way): it has the display by right; the scan looks again in 3 s.
+        if NSWorkspace.shared.isVoiceOverEnabled { return }
+        // scrod was just asked to quit (here, or for Bluetooth) and the look again is still to come: not said yet.
+        if Date() < quickRetryUntil || retryPending { return }
+        if Date().timeIntervalSince(lastUSBFree) > 30 {
+            lastUSBFree = Date()
+            guard Self.quitVoiceOversBrailleServer() else { tellUnopened(); return }
+            // Give the display a moment to be free, then look again (the 3 s scan would too, later).
+            retryPending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { return }
+                self.retryPending = false
+                guard self.apple == nil, self.lookAgain != nil || self.manager != nil else { return }
+                if self.useApple() { self.stopOwn() }
+            }
+            return
+        }
+        tellUnopened()
+    }
+
+    private func tellUnopened() {
+        guard !toldUnopened else { return }
+        toldUnopened = true
+        // Only ever said with VoiceOver off (noteUnopened returns while it is on), so it doesn't blame VoiceOver.
+        Speech.speakMessage("A braille display was found, but TurnOver couldn't open it.")
+    }
+
     /// VoiceOver's braille server (scrod) keeps a Bluetooth display's one connection open even with VoiceOver off,
     /// so TurnOver could never connect (6 Oct 2026). While TurnOver leads, it asks scrod to quit; VoiceOver starts
-    /// it again when it comes back, and it reconnects the display by itself. USB displays never need this.
+    /// it again when it comes back, and it reconnects the display by itself. A USB display can need it too (noteUnopened).
     private var quickRetryUntil = Date.distantPast
 
     @discardableResult
@@ -105,7 +154,7 @@ public final class BrailleDisplays {
         p.arguments = ["scrod"]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try? p.run(); p.waitUntilExit()
-        if p.terminationStatus == 0 { Log.info("braille: VoiceOver's braille server asked to quit, so TurnOver can connect over Bluetooth") }
+        if p.terminationStatus == 0 { Log.info("braille: VoiceOver's braille server asked to quit, so TurnOver can connect to the display") }
         return p.terminationStatus == 0
     }
 

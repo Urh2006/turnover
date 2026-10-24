@@ -11,6 +11,7 @@
 import Foundation
 import AppKit
 import TurnOverControl
+import TurnOverSpeech
 
 public enum SettingsBridge {
     private static var started = false
@@ -35,14 +36,39 @@ public enum SettingsBridge {
     static func sendState(to reply: (@Sendable ([String: Any]) -> Void)? = nil) {
         guard let data = try? JSONEncoder().encode(config),
               var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        if let section = pendingSection, reply != nil {
+            dict["_showSection"] = section
+            pendingSection = nil
+        }
         dict["_kokoroAvailable"] = KokoroVoice.available
         dict["_kokoroMode"] = KokoroVoice.mode
         dict["_kokoroVoice"] = KokoroVoice.voice
         dict["_kokoroSpeed"] = KokoroVoice.speed
         dict["_coexist"] = Coexist.wouldBeOn
+        dict["_brailleTables"] = brailleTables
+        dict["_outputDevices"] = SpeechPlayer.outputDevices().map { ["uid": $0.uid, "name": $0.name] }
+        dict["_speechPortApps"] = SpeechPort.shared.appDecisions.map { ["id": $0.id, "name": $0.name, "allowed": $0.allowed] }
+        dict["_otherLanguages"] = Languages.otherLanguages().map { language in
+            let voices = Languages.voices(for: language.code).map { ["id": $0.identifier, "name": $0.name, "language": $0.language] }
+            return ["code": language.code, "name": language.name, "voices": voices]
+        }
         guard let out = try? JSONSerialization.data(withJSONObject: dict), let s = String(data: out, encoding: .utf8) else { return }
         if let reply { reply(["op": "state", "json": s]) } else { ControlServer.shared.broadcast(["op": "state", "json": s]) }
     }
+
+    /// The braille tables, as [identifier, name] pairs: the user's language's first, then every other language's,
+    /// named with the language. Read once (going through every language's tables takes a moment).
+    private static let brailleTables: [[String]] = {
+        // Each table once (one can serve several languages; the picker needs each identifier once), under the first
+        // name met: the user's own language's.
+        var out = TOBrailleTranslatorTables.forUser().map { [$0.id, $0.name] }
+        var seen = Set(out.map { $0[0] })
+        for lang in TOBrailleTranslatorTables.otherLanguages() {
+            for t in lang.tables where seen.insert(t.id).inserted { out.append([t.id, "\(lang.language): \(t.name)"]) }
+        }
+        var first = Set<String>()
+        return out.filter { first.insert($0[0]).inserted }
+    }()
 
     static func apply(_ json: String) {
         guard let data = json.data(using: .utf8), let patch = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
@@ -50,6 +76,7 @@ public enum SettingsBridge {
         if let m = patch["_kokoroMode"] as? String { KokoroVoice.mode = m == "off" ? "off" : "reading" }
         if let v = patch["_kokoroVoice"] as? String, KokoroVoice.englishVoices.contains(v) { KokoroVoice.voice = v; KokoroVoice.mode = "reading"; KokoroVoice.preview(v) }
         if let s = patch["_kokoroSpeed"] as? Double { KokoroVoice.speed = min(2, max(0.6, s)) }
+        if let a = patch["_speechPortAllowed"] as? [String: Any], let id = a["id"] as? String, let on = a["allowed"] as? Bool { SpeechPort.shared.setAllowed(id, on) }
         if let on = patch["_coexist"] as? Bool, on != Coexist.wouldBeOn {
             UserDefaults.standard.set(on, forKey: "coexist")
             Speech.speakMessage(on ? "CoExist on. TurnOver restarts." : "CoExist off. TurnOver restarts.")
@@ -72,18 +99,47 @@ public enum SettingsBridge {
             guard let merged = try? JSONSerialization.data(withJSONObject: dict), let next = try? JSONDecoder().decode(Config.self, from: merged) else {
                 Log.warning("settings app: a change TurnOver couldn't read; nothing changed"); sendState(); return
             }
+            let before = config
             config = next
             config.save()
             SettingsProfiles.applyLive()
             KeySettings.refresh()
             TurnOverMenu.shared.onGeneralChanged?()
+            // The hooks the menu's own items run (the Settings window is the menu's equal since 21 Oct 2026).
+            if before.general.screenCurtain != next.general.screenCurtain { TurnOverMenu.shared.onScreenCurtainChanged?() }
+            if before.speech.outputDevice != next.speech.outputDevice {
+                Speech.player.outputDeviceUID = next.speech.outputDevice.isEmpty ? nil : next.speech.outputDevice
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { Speech.speakMessage("Speech on \(Speech.player.outputDescription)") }
+            }
+            if before.general.keyboardStyle != next.general.keyboardStyle { GlobalCommands.setKeyboardStyle(next.general.style) }
+            if before.braille.bluetooth != next.braille.bluetooth, next.braille.bluetooth { BrailleDisplays.shared.lookNow() }
+            if before.applications.perAppReaders != next.applications.perAppReaders { TurnOverMenu.shared.leadModeChanged?() }
+            let voiceChanged = before.speech.voice != next.speech.voice
+            let languageVoicesChanged = before.speech.languageVoices != next.speech.languageVoices
+            if voiceChanged || languageVoicesChanged { Languages.forget() }
+            // The fork's braille hooks, as the menu's items run them.
+            if before.braille.autoScrollSeconds != next.braille.autoScrollSeconds { Braille.autoScrollIntervalChanged() }
+            if before.braille.blinkRateMs != next.braille.blinkRateMs { Braille.blinkRateChanged() }
+            if next.braille.showMessages == "off", before.braille.showMessages != "off" { Braille.dropHeldMessage(); Braille.refreshSoon() }
+            // The key layer where VoiceOver reads follows its own setting too (the style's change starts or stops it above).
+            if before.general.keysWhereVoiceOverReads != next.general.keysWhereVoiceOverReads { GlobalCommands.onKeyboardStyleChanged?() }
             Log.info("settings app: \(filePatch.keys.sorted().joined(separator: ", ")) changed")
         }
         sendState()
     }
 
-    /// Opens TurnOver Settings (inside TurnOver.app).
-    public static func open() {
+    /// The section the Settings window is asked to show when it next connects: set by `open(section:)`, sent once
+    /// with the state, and forgotten after five seconds if no window asked.
+    private static var pendingSection: String?
+
+    /// Opens TurnOver Settings (inside TurnOver.app), at a section by its sidebar title when one is given. A window
+    /// already open is told the section over the control channel; a new one is told with its first state.
+    public static func open(section: String? = nil) {
+        if let section {
+            pendingSection = section
+            ControlServer.shared.broadcast(["op": "show", "section": section])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { if pendingSection == section { pendingSection = nil } }
+        }
         let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Applications/TurnOver Settings.app")
         guard FileManager.default.fileExists(atPath: url.path) else { Speech.speakMessage("TurnOver Settings isn't in this build"); return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in

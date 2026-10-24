@@ -43,9 +43,11 @@ public struct Config: Codable {
         /// NVDA, Narrator and JAWS keys share the Windows family's habits (role before the words, the cursor not
         /// moving the focus, flat review); VoiceOver keys are the Mac family.
         public var windowsKeys: Bool { style.family == .windows }
-        /// The Windows keys also where VoiceOver leads (a small key layer that translates them), not only where
-        /// TurnOver does (WINDOWS-MODE.md).
-        public var windowsKeysEverywhere = false
+        /// With NVDA or JAWS keys, the same keys where VoiceOver reads too: a small layer turns them into VoiceOver's,
+        /// Caps Lock the NVDA key there as well. On by default, so a key keeps its meaning whichever reader has the app
+        /// (the maintainer, 21 Oct 2026); off, VoiceOver's own Caps Lock chords work in VoiceOver's apps. (A new key:
+        /// the old windowsKeysEverywhere was never read, but every settings file holds it as false.)
+        public var keysWhereVoiceOverReads = true
         /// In the Mac style, the VoiceOver keys move as VoiceOver's cursor does: within a group (a toolbar, a list, a
         /// named pane), into it with VO Shift Down and out with VO Shift Up, in screen order (a tester, agreed 7 Oct
         /// 2026). Off: they walk the whole window, as NVDA's object navigation does.
@@ -78,7 +80,7 @@ public struct Config: Codable {
         public var sounds = ""
         public var effectiveSounds: String { sounds.isEmpty ? (edition != "experimental" ? "voiceover" : "turnover") : sounds }
         public init() {}
-        enum Keys: String, CodingKey { case openAtLogin, showInMenuBar, windowsKeys, keyboardStyle, windowsKeysEverywhere, navigateByGroups, groupsInWindowsStyle, focusFollowsCursor, turnOverKey = "bosunKey", handOverChimes, navigationSounds, screenCurtain, edition, handOverNothing, sounds }
+        enum Keys: String, CodingKey { case openAtLogin, showInMenuBar, windowsKeys, keyboardStyle, keysWhereVoiceOverReads, navigateByGroups, groupsInWindowsStyle, focusFollowsCursor, turnOverKey = "bosunKey", handOverChimes, navigationSounds, screenCurtain, edition, handOverNothing, sounds }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             openAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .openAtLogin)) ?? false
@@ -88,7 +90,7 @@ public struct Config: Codable {
             keyboardStyle = (try? c.decodeIfPresent(String.self, forKey: .keyboardStyle)).flatMap { KeyboardStyle(rawValue: $0)?.rawValue } ?? "mac"
             edition = (try? c.decodeIfPresent(String.self, forKey: .edition)) == "experimental" ? "experimental" : "standard"
             handOverNothing = (try? c.decodeIfPresent(Bool.self, forKey: .handOverNothing)) ?? false
-            windowsKeysEverywhere = (try? c.decodeIfPresent(Bool.self, forKey: .windowsKeysEverywhere)) ?? false
+            keysWhereVoiceOverReads = (try? c.decodeIfPresent(Bool.self, forKey: .keysWhereVoiceOverReads)) ?? true
             navigateByGroups = (try? c.decodeIfPresent(Bool.self, forKey: .navigateByGroups)) ?? true
             groupsInWindowsStyle = (try? c.decodeIfPresent(Bool.self, forKey: .groupsInWindowsStyle)) ?? false
             focusFollowsCursor = (try? c.decodeIfPresent(String.self, forKey: .focusFollowsCursor)).flatMap { ["auto", "on", "off"].contains($0) ? $0 : nil } ?? "auto"
@@ -103,7 +105,7 @@ public struct Config: Codable {
             try c.encode(openAtLogin, forKey: .openAtLogin)
             try c.encode(showInMenuBar, forKey: .showInMenuBar)
             try c.encode(keyboardStyle, forKey: .keyboardStyle); try c.encode(edition, forKey: .edition); try c.encode(handOverNothing, forKey: .handOverNothing)
-            try c.encode(windowsKeysEverywhere, forKey: .windowsKeysEverywhere)
+            try c.encode(keysWhereVoiceOverReads, forKey: .keysWhereVoiceOverReads)
             try c.encode(groupsInWindowsStyle, forKey: .groupsInWindowsStyle)
             try c.encode(navigateByGroups, forKey: .navigateByGroups); try c.encode(focusFollowsCursor, forKey: .focusFollowsCursor)
             try c.encode(turnOverKey, forKey: .turnOverKey)
@@ -315,13 +317,28 @@ public struct Config: Codable {
         /// VoiceOver never sees it, and TurnOver says nothing; for a game that speaks for itself. By bundle identifier,
         /// or "process:<name>" for a program without one (a Godot game run from Terminal). Command Control Comma, D.
         public var directApps: [String] = []
+        /// Readers per app (experimental since 22 Oct 2026): the modes, the app lists and switching as apps change.
+        /// Off, TurnOver is simply on or off and reads everywhere while on; VoiceOver is on or off by its own key.
+        /// A settings file that already holds a list or a mode other than everywhere reads as on, so nobody's set-up
+        /// changes with the build.
+        public var perAppReaders = false
+        /// TurnOver comes on when VoiceOver turns off, and goes off when VoiceOver comes on (not coexisting).
+        public var swapWithVoiceOver = true
         public init() {}
         public static let leadModes = ["apps", "everywhere", "voiceover"]
+        /// The mode in force: the chosen one with readers per app, everywhere without.
+        public var effectiveLeadMode: String { perAppReaders ? leadMode : "everywhere" }
+        /// The apps VoiceOver keeps, in force: none without readers per app.
+        public var effectiveVoiceOverBundles: [String] { perAppReaders ? voiceOverBundles : [] }
+        /// Whether readers switch as the front app changes: only with readers per app, and the switch on.
+        public var switchesAsAppsChange: Bool { perAppReaders && automaticHandOver }
+        /// Whether TurnOver takes over at launch: always without readers per app; with them, when switching is on.
+        public var handsOverAtLaunch: Bool { !perAppReaders || automaticHandOver }
         /// Whether the saved lists give `bundle` to TurnOver in the current mode (not pins or games: LeadWatcher).
         public func listedForTurnOver(_ bundle: String) -> Bool {
-            switch leadMode {
+            switch effectiveLeadMode {
             case "voiceover": return false
-            case "everywhere": return !voiceOverBundles.contains(bundle)
+            case "everywhere": return !effectiveVoiceOverBundles.contains(bundle)
             default: return leadBundles.contains(bundle)
             }
         }
@@ -340,7 +357,7 @@ public struct Config: Codable {
         public static func leadModeName(_ m: String) -> String {
             m == "everywhere" ? "TurnOver everywhere" : m == "voiceover" ? "VoiceOver everywhere" : "TurnOver in its apps"
         }
-        enum Keys: String, CodingKey { case leadBundles, leadEverywhereElse, automaticHandOver, leadMode, voiceOverBundles, directApps }
+        enum Keys: String, CodingKey { case leadBundles, leadEverywhereElse, automaticHandOver, leadMode, voiceOverBundles, directApps, perAppReaders, swapWithVoiceOver }
         // Each field falls back on its own: a new field must never wipe the list of apps TurnOver leads in (8 Oct 2026).
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
@@ -356,6 +373,14 @@ public struct Config: Codable {
                 // Settings from before the modes (code review, 13 Oct) had an "everywhere else" switch; it was never
                 // honoured, so such a file starts in apps mode.
                 leadMode = "apps"
+            }
+            swapWithVoiceOver = (try? c.decodeIfPresent(Bool.self, forKey: .swapWithVoiceOver)) ?? d.swapWithVoiceOver
+            if let chosen = try? c.decodeIfPresent(Bool.self, forKey: .perAppReaders) {
+                perAppReaders = chosen
+            } else {
+                // A set-up from before the switch that uses the lists keeps working as it did.
+                let usesLists = leadMode != "everywhere" || !voiceOverBundles.isEmpty
+                perAppReaders = usesLists
             }
         }
     }
@@ -469,8 +494,20 @@ public struct Config: Codable {
         public var mode = "followCursors"
         /// NVDA's auto scroll (NVDA+Alt+K, L, J): seconds a window stays before the next.
         public var autoScrollSeconds = 3.0
+        /// NVDA's focus context presentation: "changes" (fill the display when the context changes), "scroll" (only
+        /// when panning back) or "always" (always fill the display).
+        public var focusContext = "changes"
+        /// Panning on to another line moves the caret there ("line"), panning moves it to the start of each display's
+        /// width ("window"), or panning leaves it where it was ("off").
+        public var panMovesCaret = "line"
+        /// NVDA: the review cursor's own shape ("78", "8", "all"; NVDA's default is dot 8 alone).
+        public var cursorShapeReview = "8"
+        /// NVDA: read by paragraph.
+        public var readByParagraph = false
+        /// NVDA: speak the character when routing the cursor in text.
+        public var speakCharacterOnRouting = true
         public init() {}
-        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds }
+        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext, panMovesCaret, cursorShapeReview, readByParagraph, speakCharacterOnRouting }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             table = (try? c.decodeIfPresent(String.self, forKey: .table)) ?? ""
@@ -490,6 +527,11 @@ public struct Config: Codable {
             tether = (try? c.decodeIfPresent(String.self, forKey: .tether)) ?? "auto"
             mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? "followCursors"
             autoScrollSeconds = (try? c.decodeIfPresent(Double.self, forKey: .autoScrollSeconds)) ?? 3.0
+            focusContext = (try? c.decodeIfPresent(String.self, forKey: .focusContext)) ?? "changes"
+            panMovesCaret = (try? c.decodeIfPresent(String.self, forKey: .panMovesCaret)) ?? "line"
+            cursorShapeReview = (try? c.decodeIfPresent(String.self, forKey: .cursorShapeReview)) ?? "8"
+            readByParagraph = (try? c.decodeIfPresent(Bool.self, forKey: .readByParagraph)) ?? false
+            speakCharacterOnRouting = (try? c.decodeIfPresent(Bool.self, forKey: .speakCharacterOnRouting)) ?? true
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
@@ -500,6 +542,9 @@ public struct Config: Codable {
             try c.encode(cursorShape, forKey: .cursorShape); try c.encode(wordWrap, forKey: .wordWrap); try c.encode(showSelection, forKey: .showSelection)
             try c.encode(interruptSpeechWhileScrolling, forKey: .interruptSpeechWhileScrolling); try c.encode(bluetooth, forKey: .bluetooth)
             try c.encode(tether, forKey: .tether); try c.encode(mode, forKey: .mode); try c.encode(autoScrollSeconds, forKey: .autoScrollSeconds)
+            try c.encode(focusContext, forKey: .focusContext); try c.encode(panMovesCaret, forKey: .panMovesCaret)
+            try c.encode(cursorShapeReview, forKey: .cursorShapeReview); try c.encode(readByParagraph, forKey: .readByParagraph)
+            try c.encode(speakCharacterOnRouting, forKey: .speakCharacterOnRouting)
         }
     }
     public var general = General()
@@ -624,6 +669,8 @@ public var config: Config {
 /// The four keyboard styles (docs/KEYBOARD-STYLES-PLAN.md, 19 Oct 2026): VoiceOver's keys, and NVDA's, Narrator's and
 /// JAWS's on Mac keys. The raw values are what the settings file keeps ("mac" and "windows" from before).
 nonisolated public enum KeyboardStyle: String, CaseIterable, Sendable {
+    // Narrator keys are parked: the style exists and its table (Resources/keymaps/narrator.json) is empty, and K does not
+    // offer it (GlobalCommands.offeredStyles). docs/DECISIONS.md.
     case voiceOver = "mac", nvda = "windows", narrator, jaws
     public enum Family: Sendable { case mac, windows }
     public var family: Family { self == .voiceOver ? .mac : .windows }

@@ -302,6 +302,13 @@ extension GlobalCommands {
         add("brailleAutoScroll", "Braille auto scroll on or off (NVDA+Alt+K)", ["kb:turnover+command+k", "kb:turnover+option+k"]) { _ in Braille.toggleAutoScroll() }
         add("brailleAutoScrollFaster", "Braille auto scroll faster (NVDA+Alt+L)", ["kb:turnover+command+l", "kb:turnover+option+l"]) { _ in Braille.autoScrollRate(faster: true) }
         add("brailleAutoScrollSlower", "Braille auto scroll slower (NVDA+Alt+J)", ["kb:turnover+command+j", "kb:turnover+option+j"]) { _ in Braille.autoScrollRate(faster: false) }
+        // NVDA's braille scripts with no key of their own (Input Gestures, Braille): here for the user's own keys.
+        add("brailleShowCursor", "Braille cursor shown or hidden (NVDA: toggle braille cursor)", []) { _ in Braille.cycleSetting(.showCursor) }
+        add("brailleCursorShape", "Cycles the braille cursor's shape (NVDA: cycle braille cursor shape)", []) { _ in Braille.cycleSetting(.cursorShape) }
+        add("brailleShowMessages", "Cycles how braille shows messages (NVDA: cycle braille show messages)", []) { _ in Braille.cycleSetting(.showMessages) }
+        add("brailleShowSelection", "Selection on the display shown or hidden (NVDA: cycle braille show selection)", []) { _ in Braille.cycleSetting(.showSelection) }
+        add("brailleFocusContext", "Cycles braille focus context presentation (NVDA: change braille focus context presentation)", []) { _ in Braille.cycleSetting(.focusContext) }
+        add("braillePanMovesCaret", "Cycles whether panning the display moves the cursor: line by line, to the text shown, off", []) { _ in Braille.cycleSetting(.panMovesCaret) }
         // NVDA+Control+Shift+F1: the first press marks the log; the second copies it from the mark.
         add("copyLogPart", "Marks the log; pressed again, copies the log from the mark (NVDA+Control+Shift+F1)", ["kb:turnover+control+shift+f1"]) { _ in Log.markOrCopy() }
 

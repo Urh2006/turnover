@@ -34,7 +34,13 @@ static NSString *const kDrivers = @"/System/Library/ScreenReader/BrailleDrivers"
 @implementation TOAppleBrailleDisplay {
     id _driver;
     NSBundle *_bundle;
-    NSThread *_thread;   // a Bluetooth display's driver lives on the braille thread, where its callbacks arrive
+    NSThread *_thread;   // the driver lives on the braille thread, where its callbacks arrive
+    BOOL _bluetooth;
+    NSTimer *_poll;      // on the braille thread
+    NSData *_pendingCells;   // the latest frame not yet written (guarded by @synchronized(self))
+    BOOL _writeScheduled;
+    BOOL _polling;   // the poll timer is inside the driver
+    dispatch_block_t _pendingClose;   // a close that came during a write or a poll, run when that is done
 }
 
 /// The braille thread: a run loop of its own, as VoiceOver gives its drivers, so a Bluetooth driver's channel
@@ -66,7 +72,7 @@ static NSString *const kDrivers = @"/System/Library/ScreenReader/BrailleDrivers"
 + (void)detectBluetoothWithCompletion:(void (^)(TOAppleBrailleDisplay *))completion {
     dispatch_block_t work = ^{
         TOAppleBrailleDisplay *d = [self detectBluetooth].firstObject;
-        if (d) d->_thread = [self brailleThread];
+        if (d) { d->_thread = [self brailleThread]; d->_bluetooth = YES; }
         dispatch_async(dispatch_get_main_queue(), ^{ completion(d); });
     };
     [self performSelector:@selector(runBlock:) onThread:[self brailleThread] withObject:work waitUntilDone:NO];
@@ -87,13 +93,26 @@ static NSString *const kDrivers = @"/System/Library/ScreenReader/BrailleDrivers"
     });
 }
 
-/// A driver's matching dictionary as IOKit wants it: "*" means any value, so the key is left out.
+/// A driver's matching dictionary as IOKit wants it: "*" means any value, so the key is left out. USB matching takes
+/// idVendor only together with idProduct, so a vendor-only dictionary (Freedom Scientific's, any product) matched
+/// nothing and a Focus 5 by USB was never found (macOS 27, 21 Oct 2026); its properties go through IOPropertyMatch,
+/// which compares them as they are. FTDI's vendor (Brailliant's and VarioPro's dictionaries list it alone) is left
+/// out: it is a serial chip in countless adapters and boards, which would match, fail to load, and set TurnOver
+/// asking VoiceOver's braille server to quit and warning about a display that isn't there (review, 21 Oct 2026).
+static const NSInteger kFTDIVendor = 1027;   // 0x0403
+
 static NSMutableDictionary *matching(NSDictionary *autodetect) {
     NSMutableDictionary *m = [NSMutableDictionary dictionary];
     [autodetect enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
         if ([value isKindOfClass:NSString.class] && [value isEqual:@"*"]) return;
         m[key] = value;
     }];
+    if (![m[@"IOProviderClass"] isEqual:@"IOHIDDevice"] && m[@"idVendor"] && !m[@"idProduct"]) {
+        if ([m[@"idVendor"] respondsToSelector:@selector(integerValue)] && [m[@"idVendor"] integerValue] == kFTDIVendor) return nil;
+        NSMutableDictionary *props = [NSMutableDictionary dictionary];
+        for (NSString *key in m.allKeys) if (![key isEqual:@"IOProviderClass"]) { props[key] = m[key]; [m removeObjectForKey:key]; }
+        m[@"IOPropertyMatch"] = props;
+    }
     return m;
 }
 
@@ -102,8 +121,16 @@ static NSNumber *number(io_service_t s, NSString *key) {
     return v ? (__bridge_transfer NSNumber *)v : nil;
 }
 
+static NSMutableString *detectReport;
+static BOOL detectFoundUnopened;
++ (NSString *)lastDetectReport { return detectReport ?: @""; }
++ (BOOL)lastDetectFoundUnopened { return detectFoundUnopened; }
+
 + (NSArray<TOAppleBrailleDisplay *> *)detect {
     [self loadFrameworks];
+    detectReport = [NSMutableString string];
+    detectFoundUnopened = NO;
+    NSMutableSet *unopened = [NSMutableSet set];   // "vendor:product" claimed by a driver that wouldn't load
     NSMutableArray *found = [NSMutableArray array];
     NSMutableSet *taken = [NSMutableSet set];   // "vendor:product" already driven (a display is both a USB and a HID device)
     NSArray *names = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:kDrivers error:nil] sortedArrayUsingSelector:@selector(compare:)];
@@ -126,19 +153,36 @@ static NSNumber *number(io_service_t s, NSString *key) {
         NSDictionary *d = c[@"match"];
         BOOL hid = [d[@"IOProviderClass"] isEqual:@"IOHIDDevice"];
         io_iterator_t it = 0;
-        if (IOServiceGetMatchingServices(kIOMainPortDefault, (__bridge_retained CFDictionaryRef)matching(d), &it) != KERN_SUCCESS) continue;
+        NSMutableDictionary *m = matching(d);
+        if (!m) continue;
+        if (IOServiceGetMatchingServices(kIOMainPortDefault, (__bridge_retained CFDictionaryRef)m, &it) != KERN_SUCCESS) continue;
         io_service_t s;
         while ((s = IOIteratorNext(it))) {
             NSNumber *v = number(s, hid ? @"VendorID" : @"idVendor"), *p = number(s, hid ? @"ProductID" : @"idProduct");
             NSString *key = [NSString stringWithFormat:@"%@:%@", v, p];
             if (![taken containsObject:key]) {
-                TOAppleBrailleDisplay *display = [[self alloc] initWithService:s hid:hid bundlePath:c[@"path"]];
-                if (display) { [found addObject:display]; [taken addObject:key]; }
+                // Loaded on the braille thread, and driven there from now on: a USB driver waits for each answer
+                // by running the run loop of the thread it is called on, and polled from the main thread every
+                // 30 ms it held that thread 70% of the time, so speech after a key came 100 to 200 ms late (a
+                // Focus 5, 21 Oct 2026).
+                __block TOAppleBrailleDisplay *display = nil;
+                NSString *bundlePath = c[@"path"];
+                dispatch_block_t load = ^{
+                    display = [[self alloc] initWithService:s hid:hid bundlePath:bundlePath];
+                    if (display) display->_thread = [self brailleThread];
+                };
+                if ([NSThread currentThread] == [self brailleThread]) load();
+                else [self performSelector:@selector(runBlock:) onThread:[self brailleThread] withObject:load waitUntilDone:YES];
+                [detectReport appendFormat:@" %@ %@ (%@): %@;", [[c[@"path"] lastPathComponent] stringByDeletingPathExtension],
+                    key, d[@"IOProviderClass"], display ? [NSString stringWithFormat:@"loaded, %ld cells", (long)display.cellCount] : @"would not load"];
+                if (display) { [found addObject:display]; [taken addObject:key]; [unopened removeObject:key]; }
+                else [unopened addObject:key];
             }
             IOObjectRelease(s);
         }
         IOObjectRelease(it);
     }
+    detectFoundUnopened = unopened.count > 0;
     return found;
 }
 
@@ -229,10 +273,18 @@ static NSMutableString *btReport;
     // The model's key table, beside the driver's code.
     NSMutableDictionary *keys = [NSMutableDictionary dictionary];
     NSString *table = [_bundle pathForResource:_modelIdentifier ofType:@"plist"];
+    NSMutableDictionary *chords = [NSMutableDictionary dictionary];
     for (NSDictionary *e in (table ? [NSArray arrayWithContentsOfFile:table] : nil) ?: @[]) {
-        NSInteger ident = [e[@"SCRBrailleInputIdentifier"] integerValue];
-        if (e[@"SCRCommand"]) keys[@(ident)] = e[@"SCRCommand"];
+        id raw = e[@"SCRBrailleInputIdentifier"];
+        if (!e[@"SCRCommand"] || !raw) continue;
+        // A chord is two identifiers joined by a dot ("65793.68097", rocker down with a selector key): read whole, it
+        // came out as its first key and overwrote that key's own command (the Focus 40's table, 21 Oct 2026).
+        NSString *text = [raw description];
+        if ([text containsString:@"."]) { chords[text] = e[@"SCRCommand"]; continue; }
+        NSNumber *ident = @([raw integerValue]);
+        keys[ident] = e[@"SCRCommand"];
     }
+    _chordCommands = chords;
     _keyCommands = keys;
     return self;
 }
@@ -256,7 +308,68 @@ static NSMutableString *btReport;
     return [events isKindOfClass:NSArray.class] ? events : @[];
 }
 
-- (BOOL)isBluetooth { return _thread != nil; }
+- (BOOL)isBluetooth { return _bluetooth; }
+
+- (void)writeCellsAsync:(NSData *)cells completion:(void (^)(BOOL))completion {
+    if (!_driver) { completion(NO); return; }
+    NSMutableData *d = [cells mutableCopy];
+    if ((NSInteger)d.length < _cellCount) [d increaseLengthBy:_cellCount - d.length];
+    BOOL schedule;
+    @synchronized (self) { _pendingCells = d; schedule = !_writeScheduled; _writeScheduled = YES; }
+    if (!schedule) return;   // the write already on its way takes this frame
+    id driver = _driver; NSInteger n = _cellCount;
+    // The write stays marked under way until the driver has returned: a USB driver waits by running this thread's
+    // run loop, and a second write scheduled meanwhile entered setMainCells: inside the first (code review,
+    // 21 Oct 2026). Frames that came in during a write are drained here, the latest only.
+    dispatch_block_t write = ^{
+        for (;;) {
+            NSData *frame; dispatch_block_t closing = nil;
+            @synchronized (self) {
+                frame = self->_pendingCells; self->_pendingCells = nil;
+                if (!frame || !self->_driver) {   // done, or closed meanwhile
+                    self->_writeScheduled = NO; frame = nil;
+                    if (!self->_polling) { closing = self->_pendingClose; self->_pendingClose = nil; }
+                }
+            }
+            if (!frame) { if (closing) closing(); return; }
+            BOOL ok = [driver setMainCells:frame.bytes length:n];
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(ok); });
+        }
+    };
+    if (!_thread) { write(); return; }
+    [self performSelector:@selector(runBlock:) onThread:_thread withObject:write waitUntilDone:NO];
+}
+
+- (void)startPollingWithHandler:(void (^)(NSArray<NSNumber *> *, BOOL))handler {
+    id driver = _driver;
+    if (!driver || !_thread) return;
+    __weak TOAppleBrailleDisplay *weakSelf = self;
+    [self performSelector:@selector(runBlock:) onThread:_thread withObject:^{
+        TOAppleBrailleDisplay *me = weakSelf;
+        if (!me) return;
+        [me->_poll invalidate];
+        __block NSInteger checks = 0;
+        me->_poll = [NSTimer scheduledTimerWithTimeInterval:0.03 repeats:YES block:^(NSTimer *timer) {
+            // Marked inside the driver like a write, and for the same reason: a close that came while the driver
+            // waited ran inside getInputEvents and unloaded it under the call (code review, 21 Oct 2026).
+            TOAppleBrailleDisplay *display = weakSelf;
+            if (!display) { [timer invalidate]; return; }
+            @synchronized (display) { if (!display->_driver) return; display->_polling = YES; }
+            id events = [driver getInputEvents];
+            NSArray *list = [events isKindOfClass:NSArray.class] ? events : @[];
+            BOOL loaded = (++checks % 33 != 0) || [driver isDriverLoaded];
+            dispatch_block_t closing = nil;
+            @synchronized (display) {
+                display->_polling = NO;
+                if (!display->_writeScheduled) { closing = display->_pendingClose; display->_pendingClose = nil; }
+            }
+            if (closing) { closing(); return; }
+            if (list.count == 0 && loaded) return;
+            if (!loaded) [timer invalidate];
+            dispatch_async(dispatch_get_main_queue(), ^{ handler(list, loaded); });
+        }];
+    } waitUntilDone:NO];
+}
 
 - (BOOL)isLoaded {
     if (!_driver) return NO;
@@ -269,12 +382,17 @@ static NSMutableString *btReport;
 - (void)close {
     if (!_driver) return;
     id driver = _driver; NSInteger n = _cellCount;
-    _driver = nil;
-    [self onThread:^{
+    dispatch_block_t unload = ^{
+        [self->_poll invalidate]; self->_poll = nil;
         char blank[256] = {0};
         [driver setMainCells:blank length:MIN(n, 256)];
         [driver unloadDriver];
-    }];
+    };
+    // A write or poll under way waits by running the braille thread's run loop, where this would run inside it and
+    // unload the driver mid-call (code review, 21 Oct 2026): whichever of them finishes last runs it instead.
+    BOOL deferred;
+    @synchronized (self) { _driver = nil; deferred = _writeScheduled || _polling; if (deferred) _pendingClose = unload; }
+    if (!deferred) [self onThread:unload];
 }
 
 - (void)dealloc { [self close]; }
