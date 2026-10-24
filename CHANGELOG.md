@@ -6,6 +6,11 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 
 ### Changed
 
+- Screen reader behaviour: TurnOver is on or off, VoiceOver is on or off, and that is all. TurnOver reads everywhere
+  while it is on; no apps are labelled for either reader and nothing switches as you change apps. A new Settings
+  section, Screen reader behaviour, holds the two things that relate them: CoExist, and whether TurnOver comes on
+  when VoiceOver turns off and off when it comes on. Readers per app (the lists, the modes, switching as apps change)
+  moved to Experimental, off for a new install; a set-up that already uses them keeps working as it did.
 - The menu is short, in NVDA's shape: This app, Settings, Keys, Tools, Help, Support TurnOver, Quit. Every setting
   now lives in the Settings window, in sections down the side: General, Speech, Keyboard, Item details, Web pages,
   Documents, Screen recognition, Other apps' speech, Experimental. Two wait in Tools until they have a section:
@@ -13,6 +18,8 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 - VoiceOver keys: Left and Right pressed together, which turn Quick Nav off and on, now also switch a document between
   focus mode and browse mode: off is focus mode (the keys go to the page, until the focus leaves), on is browse mode.
   There was no deliberate way into focus mode in this style, since TurnOver Space is VO-Space.
+- Voices for other languages are in the Settings window's Speech section (a voice and a rate for each language with
+  a voice installed), the last setting to leave the menu; Braille stays under Tools until it has its section.
 - Command Control M opens the TurnOver menu in one press, in every keyboard style. Command Control Comma then M
   still works.
 
@@ -38,6 +45,8 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
   shared code, with tests (a contributor's change).
 - The app shortcut picker offers every application once: Safari and other apps reached through a link were missing,
   and some appeared twice (a contributor's change).
+- Waking the Mac no longer says TurnOver is not responding in the system's voice, several times over itself. The
+  watchdog took the sleep for a hang; it now knows the difference, and its warnings are said one at a time.
 - Finder: Command Down on a folder, and Command Up, are sent again if Finder ignored them. About one press in
   twenty did nothing although the key reached Finder; now, if nothing has changed a third of a second later, the key
   goes once more. Only for a folder, never for a file, so nothing opens twice. A symptom fix; the cause is in Finder.

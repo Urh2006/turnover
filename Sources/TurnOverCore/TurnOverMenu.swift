@@ -76,21 +76,13 @@ public final class TurnOverMenu {
         announce()
     }
 
-    /// NVDA's settings keys (NVDA+Control+V and the rest, Windows style): the menu opened at Settings, or at one of
-    /// its sections by title.
+    /// NVDA's settings keys (NVDA+Control+V and the rest, Windows style), JAWS's Insert+F2, and VO-F8 when VoiceOver
+    /// Utility isn't there: the Settings window, at one of its sections by title. The section names are the Settings
+    /// window's own (Speech, Keyboard, Item details, Web pages, Documents); any other name opens the window as it was.
+    /// Until 23 Oct 2026 this walked a Settings submenu of the TurnOver menu that no longer existed (Settings became
+    /// an action opening the window), so every settings key fell through to the plain menu.
     public func openSettings(_ section: String? = nil) {
-        let root = rootItems()
-        guard let si = root.firstIndex(where: { $0.title == "Settings" }), case .submenu(let make) = root[si].kind else { open(); return }
-        let sections = make()
-        stack = [("TurnOver menu", root, si), ("Settings", sections, 0)]
-        if let section, let i = sections.firstIndex(where: { $0.title == section }), case .submenu(let inner) = sections[i].kind {
-            stack[1].index = i
-            stack.append((section, inner(), 0))
-        }
-        isOpen = true
-        Speech.cancel()
-        Speech.speakMessage("TurnOver menu, \(stack.last?.title ?? "Settings")")
-        announce()
+        SettingsBridge.open(section: section)
     }
 
     /// For tests: the open list as an outline, submenus expanded.
@@ -392,8 +384,11 @@ public final class TurnOverMenu {
     }
 
     private func toolItems() -> [MenuItem] {
-        var items: [MenuItem] = [
-            MenuItem("Apps TurnOver reads", .submenu { self.applicationItems() }, hint: "Which apps TurnOver reads, and which VoiceOver reads"),
+        var items: [MenuItem] = []
+        if config.applications.perAppReaders {
+            items.append(MenuItem("Apps TurnOver reads", .submenu { self.applicationItems() }, hint: "Which apps TurnOver reads, and which VoiceOver reads (readers per app, Settings, Experimental)"))
+        }
+        items += [
             Self.copyVoiceOverItem,
             MenuItem("Send feedback", .submenu { self.feedbackItems() }, hint: "A report in TurnOver's reports folder, and the problem form on GitHub"),
             MenuItem("Force quit an app", .action { ForceQuit.open() }, hint: "Lists the apps that are running; the Mac's own window is silent while TurnOver reads"),
@@ -404,9 +399,8 @@ public final class TurnOverMenu {
             items.append(MenuItem("Gesture control", .toggle(get: { Trackpad.controlOn }, set: { Trackpad.set($0) }), hint: "The trackpad's gestures: VoiceOver's, or NVDA's in the Windows style. Also Command Control Comma, G"))
         }
         if Games.available { items.append(MenuItem("Games", .submenu { Games.menuItems() }, hint: "Steam and Windows games speaking through TurnOver")) }
-        // Until the Settings window has these two sections (braille is a contributor's, 21 Oct 2026), they stay here.
+        // Until the Settings window has a Braille section (a contributor's, 21 Oct 2026), braille stays here.
         items.append(MenuItem("Braille", .submenu { self.brailleItems() }, hint: "Until braille has its section in Settings"))
-        items.append(MenuItem("Voices for other languages", .submenu { self.languageItems() }, hint: "Until it has its place in Settings"))
         return items
     }
 
@@ -621,34 +615,6 @@ public final class TurnOverMenu {
     private static func appName(for bundle: String) -> String {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) { return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "") }
         return bundle
-    }
-
-    private func languageItems() -> [MenuItem] {
-        let languages = Languages.otherLanguages()
-        guard !languages.isEmpty else { return [MenuItem("No voices for other languages are installed", .action {})] }
-        return languages.map { lang in
-            MenuItem(lang.name, .submenu {
-                let picked = config.speech.languageVoices[lang.code]
-                let voices = Languages.voices(for: lang.code)
-                var items = [MenuItem("Automatic\(voices.first.map { ": \($0.name)" } ?? "")\(picked == nil ? ", current" : "")", .select {
-                    config.speech.languageVoices[lang.code] = nil
-                    config.save(); Languages.forget()
-                    Speech.speakMessage("\(lang.name): automatic")
-                })]
-                items += voices.map { v in
-                    MenuItem("\(v.name), \(v.language)\(v.identifier == picked ? ", current" : "")", .select {
-                        config.speech.languageVoices[lang.code] = v.identifier
-                        config.save(); Languages.forget()
-                        Speech.speakMessage("\(lang.name): \(v.name)")
-                    })
-                }
-                // Its own rate, last (a tester): "same as the main voice" until changed.
-                items.append(MenuItem("Rate", .number(get: { Double(config.speech.languageRates[lang.code] ?? config.speech.rate) * 100 },
-                    set: { config.speech.languageRates[lang.code] = Float($0 / 100) }, step: 5, min: 10, max: 100,
-                    format: { v in config.speech.languageRates[lang.code] == nil ? "\(Int(v.rounded())), same as the main voice" : "\(Int(v.rounded()))" })))
-                return items
-            })
-        }
     }
 
     /// Braille: the table (macOS's own, the ones VoiceOver offers) and the word at the cursor.

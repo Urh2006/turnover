@@ -8,6 +8,11 @@ fixes code that is not live. Each has a date and a reason. To reopen one, open a
 - **VoiceOver stays on** (16 Oct 2026). TurnOver reads the apps it is given; VoiceOver is silenced there by a sound
   tap and keeps passwords, macOS's own prompts and every other app. A blind person is never without speech, and
   TurnOver can concentrate on the apps where it reads better. The README says the rest under Where TurnOver stands.
+- **On or off, and that is all** (22 Oct 2026). TurnOver is on or off; VoiceOver is on or off; TurnOver reads
+  everywhere while it is on. No apps labelled for a reader, no switching as apps change, unless the experimental
+  readers-per-app switch is on. The two things that relate the readers are in Settings, Screen reader behaviour:
+  CoExist, and the swap (TurnOver on when VoiceOver goes off, and off when it comes on). Discussion 46 asked the
+  community about the default behind this.
 - **The keys follow the reader they are named after** (15 Oct 2026). VoiceOver keys do what VoiceOver's do; NVDA keys
   what NVDA's do; JAWS keys what JAWS's do. Where a key clashes with a Mac shortcut, the Mac shortcut wins. A change
   that alters what an existing key does needs a very good reason (CONTRIBUTING.md, Keep what works).
@@ -24,9 +29,17 @@ fixes code that is not live. Each has a date and a reason. To reopen one, open a
 - **Plugins are data** (20 Oct 2026). Reading rules, labels and keys for an app, written as files; no scripts run
   from a plugin. The toolkit's sandboxed scripts are not built (docs/PLUGIN-TOOLKIT-PLAN.md).
 - **Feedback through GitHub** (20 Oct 2026): the issue forms, not email.
+- **Anything found goes on the list** (22 Oct 2026). A problem or a shortcoming noticed anywhere, in a review, a
+  thread, a log or a conversation, becomes a GitHub issue with its evidence, unless it is a small contained fix
+  already in hand, which is just done. The list is where work is chosen from; nothing is carried in anyone's head.
+  Private matters (a named person, a tester's content) go to the maintainer's own list, never a public issue.
 - **Main takes pull requests only** (21 Oct 2026), the maintainer's included, with the build check green. The
   publish script opens one for each sync from the maintainer's tree, and refuses to run over a contributor's merged
   work until it has been ported.
+
+- **In browse mode a letter is always a command** (Oliver, 23 Oct 2026, issue 82): NVDA's way in both styles. A
+  field is typed into after Return or Tab has entered it, or after the switch by hand; TurnOver no longer types a
+  letter into the field under the reading position, nor resumes typing into a page field that still has the keyboard.
 
 ## Parked
 
