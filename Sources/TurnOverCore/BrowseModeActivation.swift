@@ -18,7 +18,9 @@ import TurnOverAX
 extension BrowseModeDocument {
     // MARK: Activation (NVDA: _activatePosition)
 
-    func activate(_ gesture: KeyboardGesture) {
+    /// `byAccessibility`: VO-Space. The control with the keyboard is pressed through accessibility, as VoiceOver's
+    /// VO-Space presses it, where Enter and Space send the real key (below): a page that ignores one answers the other.
+    func activate(_ gesture: KeyboardGesture, byAccessibility: Bool = false) {
         var e: AXUIElement? = nil
         if let t = lastQuickNavTarget, buffer.offset(of: t) == position {
             e = BrowseModeDocument.actionable(t) ? t : t.firstDescendant(role: "AXLink", maxVisited: 60) ?? t.firstDescendant(role: "AXButton", maxVisited: 60) ?? t
@@ -34,11 +36,13 @@ extension BrowseModeDocument {
         if let f = API.focusObject, f.pid == webArea.pid, controls.contains(f.axRole),
            Speech.sinceFocusSpoken < Date().timeIntervalSince(positionMovedAt),
            !(e.map { f.isSameElement(as: $0) } ?? false) {
+            let y = f.element
+            if byAccessibility, press(nearestTo: y) { return }
             Log.io("browse mode: \(gesture.keyName) to the focused \(f.axRole) (the keyboard moved there after the reading position)")
+            let before = ControlState(y)
             gesture.send()
             if ["AXButton", "AXLink", "AXMenuButton"].contains(f.axRole) { Tones.press() }
-            let y = f.element
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.rebuildKeepingPlace(anchor: y) }
+            watchStateChange(y, before: before)
             return
         }
         guard e != nil else { gesture.send(); return }
@@ -52,10 +56,12 @@ extension BrowseModeDocument {
                 // Only a control: a group, a dialog or the page holding the focus is not "the control already has the
                 // keyboard" (Enter on "Accept All" went to the "Privacy Settings" group around it, 10 Oct 2026).
                 if f.isSameElement(as: y), controls.contains(y.role), f.role != .passwordEdit {
+                    if byAccessibility, press(nearestTo: y) { return }
                     Log.io("browse mode: \(gesture.keyName) to the focused \(y.role) itself")
+                    let before = ControlState(y)
                     gesture.send()
                     if ["AXButton", "AXLink", "AXMenuButton"].contains(y.role) { Tones.press() }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.rebuildKeepingPlace(anchor: y) }
+                    watchStateChange(y, before: before)
                     return
                 }
                 x = y.element(kAXParentAttribute); hops += 1
@@ -75,6 +81,117 @@ extension BrowseModeDocument {
         while let y = x, d < 6 { chain.append("\(y.role) \"\((y.string(kAXTitleAttribute) ?? y.string(kAXValueAttribute) ?? "").prefix(30))\""); x = y.element(kAXParentAttribute); d += 1 }
         Log.io("browse mode: nothing to activate at \"\(Log.words(String(text.prefix(40))))\"; buffer element: \(chain.isEmpty ? "none" : Log.words(chain.joined(separator: " < "))); live page: \(text.isEmpty ? "not searched" : "no link or button with that text")")
         Speech.speakMessage("nothing to activate")
+    }
+
+    /// Whether a control's value is a check state, by TurnOver's own role (the subrole counts: a web switch is an
+    /// AXCheckBox or an AXButton with the AXSwitch subrole; a code review, 25 Oct 2026).
+    static func isCheckable(_ e: AXUIElement) -> Bool {
+        [.checkBox, .radioButton, .switchControl, .toggleButton].contains(Role.from(axRole: e.role, subrole: e.string(kAXSubroleAttribute)))
+    }
+
+    /// The keyboard put on `e`, then `done(true)` once the app's own focused element is it, or `done(false)` after a
+    /// fifth of a second; looked at by timer, never by holding the main thread (a code review, 25 Oct 2026).
+    static func confirmFocus(_ e: AXUIElement, done: @escaping (Bool) -> Void) {
+        guard e.set(kAXFocusedAttribute, kCFBooleanTrue) == .success else { done(false); return }
+        let app = AXUIElementCreateApplication(e.pid)
+        let end = Date().addingTimeInterval(0.2)
+        func check() {
+            if let f = app.element(kAXFocusedUIElementAttribute), f.isSame(e) { done(true); return }
+            if Date() > end { done(false); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { check() }
+        }
+        check()
+    }
+    /// The presses being watched, oldest first. A new press of the same control ends its older watch; presses of
+    /// different controls are watched side by side, each named if it is said after the reader moved on (a code
+    /// review, 25 Oct 2026, and the maintainer's Tab, Space, Tab, Space along a row of switches). Main thread.
+    static var watches: [(element: AXUIElement, id: Int)] = []
+    static var lastWatch = 0
+    static func beginWatch(_ e: AXUIElement) -> Int {
+        lastWatch += 1
+        watches.removeAll { $0.element.isSame(e) }
+        watches.append((e, lastWatch))
+        if watches.count > 6 { watches.removeFirst() }
+        return lastWatch
+    }
+    static func watching(_ id: Int) -> Bool { watches.contains { $0.id == id } }
+    static func endWatch(_ id: Int) { watches.removeAll { $0.id == id } }
+
+    /// What a press can change about a control, as the control says it: its value (a check box's 0 or 1, a switch's),
+    /// whether it is expanded (a menu button, a disclosure), whether it is selected (a tab, a list item).
+    struct ControlState: Equatable {
+        var value: Int?, expanded: Bool?, selected: Bool?
+        init(_ e: AXUIElement) {
+            value = e.int(kAXValueAttribute)
+            expanded = (e.attr("AXExpanded") as? NSNumber)?.boolValue
+            selected = (e.attr(kAXSelectedAttribute) as? NSNumber)?.boolValue
+        }
+        /// The control still there: its role can be read. (A control with none of the three states is still there.)
+        static func alive(_ e: AXUIElement) -> Bool { (e.attr(kAXRoleAttribute) as? String).map { !$0.isEmpty } ?? false }
+    }
+
+    /// A control pressed: its new state said, and the buffer read again, once the page has changed it. A press used
+    /// to be followed by nothing at all unless the control was a check box with the focus: Squarespace's switches
+    /// (VO-Space said nothing, and the buffer went on saying "off"), the Claude app's Apps button (expanded or
+    /// collapsed, never said), 25 Oct 2026. Looked at for three seconds (Squarespace changes a switch two seconds
+    /// after the key); said once, the page's own event and this look sharing the de-duplication; a state that can't
+    /// be read is never guessed. The reader moving on (Tab to the next control, or the reading position) doesn't
+    /// end the watch: a change that lands after that is said with the control's name, so it is clear which one
+    /// changed, and the reading position is left where it is.
+    func watchStateChange(_ element: AXUIElement, before: ControlState) {
+        let watch = Self.beginWatch(element)
+        let pressedAt = Date()
+        let checkable = Self.isCheckable(element)
+        let focusAtPress = API.focusObject?.element
+        let urlAtPress = url   // another page since (a link followed, Back): nothing said about the one left
+        func look(_ tries: ArraySlice<Double>) {
+            guard let next = tries.first else { Self.endWatch(watch); return }
+            let delay = max(0, pressedAt.addingTimeInterval(next).timeIntervalSinceNow)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, Self.watching(watch), API.focusTreeInterceptor === self, self.url == urlAtPress else { Self.endWatch(watch); return }
+                // Moved on: the reading position moved off the control, or the focus went to another one. (The focus
+                // arriving on the pressed control moves the reading position to it: that is not moving on. And the
+                // focus is compared with the focus at the press, since in browse mode it is often on another control
+                // entirely when the reading position's control is pressed.)
+                let onIt = self.buffer.segment(at: self.position)?.element.isSame(element) ?? false
+                let positionMoved = self.positionMovedAt > pressedAt && !onIt
+                let focusMoved = API.focusObject.map { o in let f = o.element; return !f.isSame(element) && !(focusAtPress.map { f.isSame($0) } ?? false) } ?? false
+                let movedOn = positionMoved || focusMoved
+                guard ControlState.alive(element) else { self.finishWatch(watch, element, changed: true, movedOn: movedOn); return }   // gone: nothing said
+                let now = ControlState(element)
+                guard now != before else {
+                    if tries.count == 1 { self.finishWatch(watch, element, changed: false, movedOn: movedOn) } else { look(tries.dropFirst()) }
+                    return
+                }
+                // The focus's own expansion and selection events say those for it; only a check state is said for
+                // the focus too (pages often change it with no event), de-duplicated with the event. A change that
+                // isn't said keeps the watch going, for one that is (a code review, 25 Oct 2026).
+                let isFocus = API.focusObject?.element.isSame(element) == true
+                let said = movedOn ? ObjectFactory.make(element).name : ""
+                let prefix = said.isEmpty ? "" : "\(said), "
+                if checkable, let v = now.value, v != before.value {
+                    if !Speech.checkStateSpoken(of: element, since: pressedAt) { Speech.speakCheckState(of: element, named: movedOn) }
+                } else if let e = now.expanded, e != before.expanded, !isFocus {
+                    Speech.speakMessage(prefix + (e ? "expanded" : "collapsed"))
+                } else if let sel = now.selected, sel != before.selected, !isFocus {
+                    Speech.speakMessage(prefix + (sel ? "selected" : "not selected"))
+                } else {
+                    if tries.count == 1 { self.finishWatch(watch, element, changed: true, movedOn: movedOn) } else { look(tries.dropFirst()) }
+                    return
+                }
+                self.finishWatch(watch, element, changed: true, movedOn: movedOn)
+            }
+        }
+        look([0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0][...])
+    }
+    /// The watch over. The buffer is read again now if the control changed, or if this was the last watch running
+    /// (one read for several presses, not one each: six builds in a row stalled the keys; a code review, 25 Oct
+    /// 2026). Once the reader has moved on, the buffer is only marked stale: the next move reads it again, keeping
+    /// the place, where a read now would have put the reading position back at the start of its line.
+    private func finishWatch(_ id: Int, _ element: AXUIElement, changed: Bool, movedOn: Bool) {
+        Self.endWatch(id)
+        if movedOn { buffer.isDirty = true; return }
+        if changed || Self.watches.isEmpty { rebuildKeepingPlace(anchor: element) }
     }
 
     /// NVDA's Elements List (NVDA+F7), VoiceOver's Item Chooser (VO-I): the page's headings, links, form fields,
@@ -218,17 +335,49 @@ extension BrowseModeDocument {
                 return true
             }
             if BrowseModeDocument.actionable(x) || (focusable && !["AXStaticText", "AXGroup", "AXWebArea", "AXScrollArea", "AXHeading", "AXList", "AXTable", "AXRow", "AXCell"].contains(role)) {
+                let before = ControlState(x)
+                // A menu button by the keyboard, not by accessibility's press: the Claude app's menus (Radix, common on
+                // the web) open on the pointer going down or on a key, never on the click a press sends, so "More
+                // options" reported success and opened nothing, and Delete was out of reach (25 Oct 2026). Only once
+                // the keyboard is confirmed on it, so the Space can't go to whatever had the focus before; otherwise
+                // the press as before. Never both: one activation, so nothing is pressed twice.
+                if ["AXPopUpButton", "AXMenuButton"].contains(role) {
+                    let activation = Self.beginWatch(x)   // an older watch of this control stops
+                    let name = Log.words(x.string(kAXTitleAttribute) ?? x.string(kAXDescriptionAttribute) ?? "")
+                    let asked = Date()
+                    let focusBefore = API.focusObject?.element
+                    Self.confirmFocus(x) { [weak self] confirmed in
+                        guard let self, Self.watching(activation), API.focusTreeInterceptor === self else { Self.endWatch(activation); return }
+                        Self.endWatch(activation)   // the press watch below is its own entry; none left behind on the ways out
+                        // Moved on while the keyboard was being put there (Tab, or the reading position): nothing pressed.
+                        let focusNow = API.focusObject?.element
+                        let focusMovedElsewhere = focusNow.map { now in !now.isSame(x) && !(focusBefore.map { now.isSame($0) } ?? false) } ?? false
+                        let onIt = self.buffer.segment(at: self.position)?.element.isSame(x) ?? false
+                        if focusMovedElsewhere || (self.positionMovedAt > asked && !onIt) {
+                            Log.io("browse mode: moved on before \(role) \"\(name)\" could be pressed; not pressed")
+                            return
+                        }
+                        if confirmed {
+                            Log.io("browse mode: \(role) \"\(name)\" by the keyboard: Space")
+                            KeyboardGesture(keyCode: 49, modifiers: [], characters: " ", timestamp: 0, isRepeat: false, flags: []).send()
+                        } else {
+                            let r = AXUIElementPerformAction(x, kAXPressAction as CFString)
+                            Log.io("browse mode: \(role) \"\(name)\": the keyboard didn't reach it; pressed → \(describeError(r))")
+                        }
+                        Tones.press()
+                        self.watchStateChange(x, before: before)
+                    }
+                    return true
+                }
                 let r = AXUIElementPerformAction(x, kAXPressAction as CFString)
                 Log.io("browse mode: press \(role) \"\(Log.words(x.string(kAXTitleAttribute) ?? x.string(kAXDescriptionAttribute) ?? ""))\" → \(describeError(r))")
                 if r == .success {
                     Tones.press()
                     // A press often changes the page without loading another (AppleVis's Main Menu opens its links;
-                    // the old copy still had the closed menu's text, with nothing to press, 3 Oct 2026): read it again.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.rebuildKeepingPlace(anchor: x) }
-                    // A check box pressed from the page (not the focus, so no state event reaches TurnOver): say its state.
-                    if ["AXCheckBox", "AXRadioButton"].contains(role), API.focusObject?.isSameElement(as: x) != true {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { Speech.speakCheckState(of: x) }
-                    }
+                    // the old copy still had the closed menu's text, with nothing to press, 3 Oct 2026): the watch
+                    // reads it again, and says the control's new state (a check box pressed from the page gets no
+                    // state event, as it isn't the focus).
+                    watchStateChange(x, before: before)
                     return true
                 }
             }

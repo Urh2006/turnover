@@ -125,7 +125,7 @@ public enum Speech {
         }
         // While VoiceOver is on it does the talking: TurnOver speaking too (its own menu-bar menu, read item by
         // item over VoiceOver, 3 Oct 2026) is two voices at once.
-        if NSWorkspace.shared.isVoiceOverEnabled, !Coexist.on { completion?(false); return }   // (coexisting, VoiceOver is on and silent in TurnOver's apps)
+        if NSWorkspace.shared.isVoiceOverEnabled { completion?(false); return }
         let s = cleaned(text)
         // Nothing left to say (zero-width marks, a bidi mark): it still "starts", or say all's count of queued
         // chunks never came down and three such lines stopped it for good (a code review, 14 Oct 2026).
@@ -273,17 +273,10 @@ public enum Speech {
     }
 
     /// Speak an object the way NVDA does on focus: name, role, value, states, description, shortcut, position; then its text if it has any.
-    private static var passwordHintSaid = Date.distantPast
     private static var lastFocusWords = ""
     private static var lastFocusWordsAt = Date.distantPast
     public static func speakObject(_ obj: TurnOverObject, reason: OutputReason) {
         var parts = objectPropertiesSpeech(obj, reason: reason)
-        // A password field while coexisting: the keyboard is the Mac's alone there (secure input), so the VoiceOver
-        // keys are off and TurnOver echoes a count; said once an hour (a code review on 17 Oct 2026).
-        if reason == .focus, obj.role == .passwordEdit, Coexist.on, Date().timeIntervalSince(passwordHintSaid) > 3600 {
-            passwordHintSaid = Date()
-            parts.append("TurnOver counts the characters as you type; Tab moves on")
-        }
         // A table or list that takes focus on macOS keeps its selection inside it: say the selected row too,
         // as NVDA's focus on a list item does on Windows ("Internet accounts, table, GMail, IMAP, 3 of 3").
         if reason == .focus || reason == .query, [.table, .list, .treeView, .outline, .browser].contains(obj.role) {
@@ -347,14 +340,35 @@ public enum Speech {
     }
 
     /// A check box or radio button just pressed: "checked", "not checked" or "half checked", read fresh.
-    private static var lastCheckSpoken: (AXUIElement, Date)?
-    public static func speakCheckState(of element: AXUIElement) {
-        if let (e, t) = lastCheckSpoken, CFEqual(e, element), Date().timeIntervalSince(t) < 0.3 { return }   // event and press both
-        lastCheckSpoken = (element, Date())
+    /// What was last said for each box (the newest eight): the page's event and TurnOver's own look at a pressed box
+    /// share these, and several boxes pressed in a row each keep their own (a code review, 25 Oct 2026).
+    private static var checksSpoken: [(element: AXUIElement, at: Date, word: String)] = []
+    private static func lastCheckSpoken(_ element: AXUIElement) -> (at: Date, word: String)? {
+        checksSpoken.last { CFEqual($0.element, element) }.map { ($0.at, $0.word) }
+    }
+    private static func noteCheckSpoken(_ element: AXUIElement, _ word: String) {
+        checksSpoken.removeAll { CFEqual($0.element, element) }
+        checksSpoken.append((element, Date(), word))
+        if checksSpoken.count > 8 { checksSpoken.removeFirst() }
+    }
+    /// Whether this box's state was said since `date` (the page's own event did it: no need to say it again).
+    public static func checkStateSpoken(of element: AXUIElement, since date: Date) -> Bool {
+        lastCheckSpoken(element).map { $0.at >= date } ?? false
+    }
+    /// `named`: the control's name first ("turnoverformac.com, on"): for a change that lands after the reader has
+    /// moved on to another control, so it is clear which one changed (25 Oct 2026).
+    public static func speakCheckState(of element: AXUIElement, named: Bool = false) {
+        if let last = lastCheckSpoken(element), Date().timeIntervalSince(last.at) < 0.3 { return }   // event and press both
         let fresh = ObjectFactory.make(element)
         let s = fresh.states
-        enqueue(fresh.role == .switchControl ? (s.contains(.on) ? "on" : "off")
-                : s.contains(.checked) ? "checked" : s.contains(.halfChecked) ? "half checked" : fresh.role == .toggleButton ? (s.contains(.pressed) ? "pressed" : "not pressed") : "not checked")
+        let word = fresh.role == .switchControl ? (s.contains(.on) ? "on" : "off")
+                : s.contains(.checked) ? "checked" : s.contains(.halfChecked) ? "half checked" : fresh.role == .toggleButton ? (s.contains(.pressed) ? "pressed" : "not pressed") : "not checked"
+        // The same state again, within two seconds: the page's late event after TurnOver's own look at the box (a code
+        // review, 25 Oct 2026). A different state is news and is said at once.
+        if let last = lastCheckSpoken(element), last.word == word, Date().timeIntervalSince(last.at) < 2 { return }
+        noteCheckSpoken(element, word)
+        let name = named ? fresh.name : ""
+        enqueue(name.isEmpty ? word : "\(name), \(word)")
     }
 
     /// NVDA: getObjectPropertiesSpeech / getPropertiesSpeech, in NVDA's order.
@@ -397,21 +411,51 @@ public enum Speech {
             if roleWords.lowercased() != "unknown" { parts.append(roleWords) }
         }
         let reportsText = obj.hasNavigableText && reason != .focusEntered && reason != .mouse
+        // The pieces, each as the rules above and below give it, then said in the order the verbosity list sets
+        // (Settings, Item details; everywhere or for this app), the pieces turned off left out (27 Oct 2026).
+        var pieces: [(String, [String])] = []
+        if !name.isEmpty { pieces.append(("name", [name])) }
+        if parts.count > (name.isEmpty ? 0 : 1) { pieces.append(("role", [parts.last!])) }
         // A value that only repeats the name is not said twice (Excel's headings give both, 10 Oct 2026).
-        if !reportsText, reason != .focusEntered, !Role.silentValues.contains(role), let v = obj.value, !v.isEmpty, v != name { parts.append(v) }
-        parts.append(contentsOf: statesSpeech(role: role, states: obj.states, reason: reason))
-        if config.presentation.reportObjectDescriptions, let d = obj.description, !d.isEmpty, d != name { parts.append(d) }
-        if config.presentation.reportKeyboardShortcuts, reason != .focusEntered || role == .list, let k = obj.keyboardShortcut, !k.isEmpty { parts.append(k) }
-        if config.presentation.reportObjectPositionInformation, let p = obj.positionInfo {
-            if let i = p.index, let n = p.count, i > 0, i <= n { parts.append("\(i) of \(n)") }
-            if reason != .focusEntered, let l = p.level { parts.append("level \(l)") }
+        if !reportsText, reason != .focusEntered, !Role.silentValues.contains(role), let v = obj.value, !v.isEmpty, v != name { pieces.append(("value", [v])) }
+        let states = statesSpeech(role: role, states: obj.states, reason: reason)
+        if !states.isEmpty { pieces.append(("state", states)) }
+        if let d = obj.description, !d.isEmpty, d != name { pieces.append(("description", [d])) }
+        if reason != .focusEntered || role == .list, let k = obj.keyboardShortcut, !k.isEmpty { pieces.append(("shortcut", [k])) }
+        if let p = obj.positionInfo {
+            if let i = p.index, let n = p.count, i > 0, i <= n { pieces.append(("position", ["\(i) of \(n)"])) }
+            if reason != .focusEntered, let l = p.level { pieces.append(("level", ["level \(l)"])) }
         }
+        let bundle = obj.element.pid > 0 ? bundleIdentifier(of: obj.element.pid) : nil
+        parts = arranged(pieces, by: config.presentation.verbosity(for: bundle))
         // A check box whose label is a paragraph (an agreement): what it is and whether it is checked first, so the
         // state is not lost at the end of a long sentence.
         if [.checkBox, .radioButton, .toggleButton, .switchControl].contains(role), name.count > 80, parts.first == name {
             return Array(parts.dropFirst()) + [name]
         }
         return parts
+    }
+
+    /// The pieces in the list's order, the ones turned off left out. Pure, for the tests.
+    public static func arranged(_ pieces: [(String, [String])], by v: Config.Verbosity) -> [String] {
+        var out: [String] = []
+        for piece in v.order where v.says(piece) {
+            for (k, words) in pieces where k == piece { out.append(contentsOf: words) }
+        }
+        return out
+    }
+
+    /// The bundle identifier of a process, kept once looked up (a dictionary of the last 32). Owned by `bundleLock`:
+    /// every read and write is inside it, so the dictionary may be reached from any thread that speaks.
+    nonisolated(unsafe) private static var bundleByPid: [pid_t: String] = [:]
+    private static let bundleLock = NSLock()
+    static func bundleIdentifier(of pid: pid_t) -> String? {
+        bundleLock.lock(); defer { bundleLock.unlock() }
+        if let b = bundleByPid[pid] { return b.isEmpty ? nil : b }
+        let b = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? ""
+        if bundleByPid.count > 32 { bundleByPid.removeAll() }
+        bundleByPid[pid] = b
+        return b.isEmpty ? nil : b
     }
 
     // MARK: - Text
@@ -637,9 +681,12 @@ public enum Speech {
                 if offset >= start, ends(c) { found = k; break }
                 offset += String(c).utf16.count
             }
-        } else if let i = t.lastIndex(where: ends), t[(i + 1)...].allSatisfy(inWord) {
-            // Where the word began isn't known (a Backspace went back past it): the last ending character, with only
-            // the next word's letters after it.
+        } else if let i = t.lastIndex(where: ends), i == t.count - 1 {
+            // Where the word began isn't known (a Backspace went back past it): the ending character must be the
+            // last thing in the field. Letters after the last ending character were taken for the next word's, but
+            // with the field lagging they are the word still being typed, and the word before it was read out: "for
+            // entrusting", Backspace, a word, Space said "for" (the maintainer, TextEdit, 27 Oct 2026). Not taken yet
+            // means another look in 10 ms, and after 100 ms the letters typed, which are right in this case.
             found = i
         }
         guard let i = found else { return (false, nil, nil) }

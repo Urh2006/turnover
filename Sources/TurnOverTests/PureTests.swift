@@ -50,12 +50,62 @@ func pureTests() {
         let off = decode("{\"leadMode\": \"everywhere\"}")
         expect(off.effectiveLeadMode, "everywhere"); expect(off.switchesAsAppsChange, false); expect(off.handsOverAtLaunch, true)
         expect(decode("{}").swapWithVoiceOver, true, "the swap with VoiceOver is on unless turned off")
+        expect(decode("{\"swapWithVoiceOver\": false}").swapWithVoiceOver, false, "the choice is kept")
+    }
+    test("verbosity: the pieces in the list's order, off ones left out; an old file's switches become the list") {
+        let pieces: [(String, [String])] = [("name", ["Save"]), ("role", ["button"]), ("state", ["dimmed"]), ("description", ["Saves the file"]), ("position", ["2 of 5"])]
+        expect(Speech.arranged(pieces, by: Config.Verbosity()), ["Save", "button", "dimmed", "Saves the file", "2 of 5"], "the standard order")
+        var v = Config.Verbosity(order: ["role", "name"], off: ["description"])
+        expect(v.order, ["role", "name", "value", "state", "description", "shortcut", "position", "level"], "missing pieces appended in the standard order")
+        expect(Speech.arranged(pieces, by: v), ["button", "Save", "dimmed", "2 of 5"], "role first, help text off")
+        v.set("position", said: false); v.set("description", said: true)
+        expect(Speech.arranged(pieces, by: v), ["button", "Save", "dimmed", "Saves the file"], "position turned off, help text back on")
+        let decode: (String) -> Config.Presentation = { json in try! JSONDecoder().decode(Config.Presentation.self, from: json.data(using: .utf8)!) }
+        let old = decode("{\"reportObjectDescriptions\": false, \"reportKeyboardShortcuts\": true, \"reportObjectPositionInformation\": false}")
+        expect(old.verbosity.off.sorted(), ["description", "level", "position"], "a file from before the list: its switches become off entries (position took the level with it)")
+        expect(old.reportObjectDescriptions, false); expect(old.reportKeyboardShortcuts, true)
+        let new = decode("{\"verbosity\": {\"order\": [\"value\", \"bogus\", \"name\"], \"off\": [\"role\"]}, \"verbosityByApp\": {\"com.apple.mail\": {\"order\": [\"description\"], \"off\": []}}}")
+        expect(new.verbosity.order.prefix(3).map { $0 }, ["value", "name", "role"], "unknown pieces dropped, the rest appended")
+        expect(new.verbosity(for: "com.apple.mail").order.first, "description", "the app's own list")
+        expect(new.verbosity(for: "com.apple.Safari").order.first, "value", "another app: the everywhere list")
     }
     test("finder: a list row is a folder by its Kind cell or the folder's dashes in Size") {
         expect(FinderRows.isFolderRow(cellTexts: ["Reports", "Today at 10:14", "--", "Folder"]), true)
         expect(FinderRows.isFolderRow(cellTexts: ["Notes.docx", "8 Oct 2026 at 15:57", "244 KB", "Microsoft Word document (.docx)"]), false)
         expect(FinderRows.isFolderRow(cellTexts: ["Reports", "Today at 10:14", "--"]), true, "the Kind column hidden")
         expect(FinderRows.isFolderRow(cellTexts: []), false, "an icon view item has no cells")
+    }
+    test("typing echo: the field's word once it has taken the key, the letters typed only without one") {
+        expect(Speech.wordJustTyped(field: "the", typed: "teh"), "the", "autocorrect: the field's word")
+        expect(Speech.wordJustTyped(field: "café", typed: "cafe"), "café", "a dead key's accent")
+        expect(Speech.wordJustTyped(field: nil, typed: "word"), "word", "no field word: the letters typed")
+        expect(Speech.wordJustTyped(field: "", typed: ""), nil, "nothing")
+        // Taken: the space is in, and only the next word's letters after it.
+        let a = Speech.fieldWord(endedBy: " ", before: "one two ", notBefore: 4)
+        check(a.taken && a.word == "two", "taken: \(a)")
+        let b = Speech.fieldWord(endedBy: " ", before: "one two th", notBefore: 4)
+        check(b.taken && b.word == "two" && b.next == 8, "typed on into the next word: \(b)")
+        // Not yet: the field lags; the only space is the word before's.
+        let c = Speech.fieldWord(endedBy: " ", before: "one tw", notBefore: 4)
+        check(!c.taken, "lagging field: \(c)")
+        let d = Speech.fieldWord(endedBy: ".", before: "かな.", notBefore: 0)
+        check(d.taken && d.word == "かな", "kana: \(d)")
+        let e = Speech.fieldWord(endedBy: "\r", before: "line\n", notBefore: 0)
+        check(e.taken && e.word == "line", "Return against the field's line break: \(e)")
+        // The end of a sentence typed fast: the full stop is in, with a space and the next word after it.
+        let f = Speech.fieldWord(endedBy: ".", before: "one the. Ne", notBefore: 4)
+        check(f.taken && f.word == "the" && f.next == 9, "a full stop, then a space and the next word: \(f)")
+        let g = Speech.fieldWord(endedBy: ",", before: "one two, ", notBefore: 4)
+        check(g.taken && g.word == "two", "a comma and a space: \(g)")
+        // A closing double quote the field made curly.
+        let h = Speech.fieldWord(endedBy: "\"", before: "say “hi” ", notBefore: 5)
+        check(h.taken && h.word == "hi", "a closing smart quote: \(h)")
+        // After a Backspace the start isn't known: the space must be the field's last character, or the word before
+        // the one being typed was read out (27 Oct 2026).
+        let i = Speech.fieldWord(endedBy: " ", before: "for entrusting", notBefore: nil)
+        check(!i.taken, "start unknown, field lagging: not the word before: \(i)")
+        let j = Speech.fieldWord(endedBy: " ", before: "for entrusting ", notBefore: nil)
+        check(j.taken && j.word == "entrusting", "start unknown, space in: \(j)")
     }
     test("applications: hidden links to visible apps appear once, hidden apps stay out") {
         let fm = FileManager.default
@@ -969,6 +1019,10 @@ func browseTextNavTests() {
                 check(GlobalCommands.shared.script(named: value) != nil || vo.script(named: value) != nil, "\(key) → \(value): a command TurnOver has")
             }
         }
+        // Caps Lock H is JAWS's Say Sentence. It pointed at "=kb:turnover+control+s", and NVDA+Control+S opens the
+        // Speech settings in the Windows family since 12 Oct 2026 (NVDA-PARITY.md, decision 6), so Caps Lock H
+        // opened them too (Guides/11-keys-jaws.md, 21 Oct 2026: "TurnOver H | Opens TurnOver's Speech").
+        expect(jaws[normalizeGestureIdentifier("kb:turnover+h")], "reportCurrentSentence", "Caps Lock H reads the sentence, as JAWS's Say Sentence")
         let sayAll = StyleKeymap.sayAllKeys(for: .jaws)
         expect(sayAll[normalizeGestureIdentifier("kb:leftArrow")], "jaws_sayAllBack", "Left during say all goes back")
         expect(sayAll[normalizeGestureIdentifier("kb:pageUp")], "jaws_sayAllFaster", "Page Up during say all is faster")

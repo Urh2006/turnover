@@ -429,11 +429,68 @@ struct KeyboardView: View {
 
 struct ItemsView: View {
     @EnvironmentObject var model: Model
+    /// "everywhere", or the bundle identifier of the app the list is for.
+    @State private var scope = "everywhere"
+    // The verbosity manager (27 Oct 2026): what is said about an item, in order, each piece on or off; one list for
+    // everywhere and one for the app last in front, kept apart. The three old switches (help text, shortcut,
+    // position) are rows of this list now. The names match Config.Verbosity.titles.
+    private static let pieces = ["name", "role", "value", "state", "description", "shortcut", "position", "level"]
+    private static let titles: [String: String] = [
+        "name": "Name", "role": "Kind, such as button or link", "value": "Value", "state": "State, such as checked or expanded",
+        "description": "Help text", "shortcut": "Keyboard shortcut", "position": "Position, such as 3 of 10", "level": "Level, in a tree or outline",
+    ]
+    private var frontApp: (bundle: String, name: String)? {
+        guard let d = model.special("_frontApp") as? [String: Any], let b = d["bundle"] as? String, let n = d["name"] as? String else { return nil }
+        return (b, n)
+    }
+    private var everywhere: [String: Any] { model.get("presentation", "verbosity") as? [String: Any] ?? [:] }
+    private var byApp: [String: Any] { model.get("presentation", "verbosityByApp") as? [String: Any] ?? [:] }
+    private var ownList: Bool { scope == "everywhere" || byApp[scope] != nil }
+    private var current: [String: Any] { scope == "everywhere" ? everywhere : (byApp[scope] as? [String: Any] ?? everywhere) }
+    private var order: [String] {
+        var o = (current["order"] as? [String] ?? []).filter { Self.pieces.contains($0) }
+        for p in Self.pieces where !o.contains(p) { o.append(p) }
+        return o
+    }
+    private var off: [String] { current["off"] as? [String] ?? [] }
+    private func save(order: [String], off: [String]) {
+        let v: [String: Any] = ["order": order, "off": off]
+        if scope == "everywhere" { model.set("presentation", "verbosity", v) } else { var d = byApp; d[scope] = v; model.set("presentation", "verbosityByApp", d) }
+    }
+    private func move(_ piece: String, by delta: Int) {
+        var o = order
+        guard let i = o.firstIndex(of: piece), o.indices.contains(i + delta) else { return }
+        o.swapAt(i, i + delta)
+        save(order: o, off: off)
+    }
     var body: some View {
         Form {
-            Toggle("Help text of items", isOn: model.bool("presentation", "reportObjectDescriptions"))
-            Toggle("Each item's keyboard shortcut", isOn: model.bool("presentation", "reportKeyboardShortcuts"))
-            Toggle("Position, such as 3 of 10", isOn: model.bool("presentation", "reportObjectPositionInformation"))
+            Section("What is said about an item, in order") {
+                Picker("For", selection: $scope) {
+                    Text("Everywhere").tag("everywhere")
+                    if let f = frontApp { Text(f.name).tag(f.bundle) }
+                }
+                if scope != "everywhere", !ownList {
+                    Text("Using the everywhere list. A change here starts a list for this app.")
+                }
+                ForEach(Array(order.enumerated()), id: \.element) { i, piece in
+                    let title = Self.titles[piece] ?? piece
+                    HStack {
+                        Toggle(title, isOn: Binding(get: { !off.contains(piece) }, set: { on in
+                            var o = off.filter { $0 != piece }; if !on { o.append(piece) }; save(order: order, off: o)
+                        }))
+                        Spacer()
+                        Button("Up") { move(piece, by: -1) }.disabled(i == 0).accessibilityLabel("Move \(title) up")
+                        Button("Down") { move(piece, by: 1) }.disabled(i == order.count - 1).accessibilityLabel("Move \(title) down")
+                    }
+                }
+                if scope != "everywhere", ownList {
+                    Button("Use the everywhere list for this app") { var d = byApp; d[scope] = nil; model.set("presentation", "verbosityByApp", d) }
+                }
+            }
+            // Another app came to the front while the list was for the one before: back to everywhere, so the controls
+            // never edit an app the picker no longer names (a code review, 27 Oct 2026).
+            .onChange(of: frontApp?.bundle) { _, now in if scope != "everywhere", scope != now { scope = "everywhere" } }
             Toggle("Hints after a pause", isOn: model.bool("presentation", "speakHints"))
             Toggle("Say which plugin an app has as it comes to the front", isOn: model.bool("presentation", "announcePlugins"))
             Picker("Heading, link and button: when to say them", selection: model.string("documentFormatting", "roleOrder", "auto")) {
@@ -503,6 +560,16 @@ struct OtherAppsView: View {
     }
     var body: some View {
         Form {
+            // Steam's switch, here as well as under Games in the TurnOver menu: every setting has a place in this
+            // window (21 Oct 2026), and Big Picture reading, off since it became a choice on 21 Oct, couldn't be found
+            // (the maintainer, 25 Oct 2026). Saved in the settings file, so they hold across restarts.
+            Section("Steam") {
+                Toggle("Read Steam's Big Picture", isOn: model.bool("games", "readBigPictureChosen"))
+                    .accessibilityLabel("Read Steam's Big Picture")
+                    .accessibilityHint("Makes Steam open a debugging port on this Mac while it runs, which other programs here could use too.")
+                Text("Big Picture makes Steam open a debugging port on this Mac while it runs, which other programs here could use too. Off removes it. Steam needs restarting after this is turned on.").font(.caption)
+                Button("Restart Steam") { model.setSpecial("_restartSteam", true) }
+            }
             if apps.isEmpty {
                 Text("No app has asked to speak through TurnOver yet. A game or another program can ask; it appears here, and you choose whether it may.").font(.caption)
             } else {
@@ -558,18 +625,16 @@ struct GeneralView: View {
 /// readers per app, folded away (22 Oct 2026; last in the list, the place for the things most people never touch).
 struct ReadersView: View {
     @EnvironmentObject var model: Model
-    private var coexist: Binding<Bool> {
-        Binding(get: { model.special("_coexist") as? Bool ?? false }, set: { model.setSpecial("_coexist", $0) })
-    }
     var body: some View {
         Form {
             Section {
-                Toggle("TurnOver comes on when VoiceOver turns off, and off when VoiceOver comes on", isOn: model.bool("applications", "swapWithVoiceOver"))
-                Text("Off: each reader has its own switch and neither changes the other. Command Control Period is TurnOver's; Command F5 is VoiceOver's.").font(.caption)
-            }
-            Section {
-                Toggle("CoExist: VoiceOver stays running alongside TurnOver", isOn: coexist)
-                Text("VoiceOver is kept quiet where TurnOver reads and keeps passwords and macOS's own prompts. Changing it restarts TurnOver.").font(.caption)
+                // Named and described for accessibility explicitly: the long label came through empty, read as "switch, on"
+                // with nothing said about what it does (25 Oct 2026), while the shorter one below was read.
+                // One switch for the two readers swapping (25 Oct 2026: a second, for the quit alone, said the same by halves).
+                Toggle("TurnOver and VoiceOver swap: one comes on as the other goes off", isOn: model.bool("applications", "swapWithVoiceOver"))
+                    .accessibilityLabel("TurnOver and VoiceOver swap: one comes on as the other goes off")
+                    .accessibilityHint("Off: each reader has its own switch and neither turns the other on or off; TurnOver is still quiet while VoiceOver is on.")
+                Text("On: TurnOver turns VoiceOver off as it starts and on as it quits, comes on when VoiceOver turns off and steps aside when VoiceOver comes on. Off: each reader has its own switch and neither turns the other on or off, for VoiceOver reading inside a virtual machine such as Parallels. Either way one reader speaks at a time: while VoiceOver is on, TurnOver is quiet.").font(.caption)
             }
             DisclosureGroup("Experimental: readers per app") {
                 Toggle("Readers per app", isOn: model.bool("applications", "perAppReaders"))
@@ -579,9 +644,44 @@ struct ReadersView: View {
     }
 }
 
+/// The window's manners (25 Oct 2026, an AppleVis reader's first evening with the window): Escape closes it, as it
+/// closes TurnOver's menu; the app goes with its last window, and with TurnOver, instead of lingering with no window
+/// where only a force quit found it.
+final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
+    private var escapeMonitor: Any?
+    /// Looks at which TurnOver was missing. Main-actor isolated; a static, since the timer's closure
+    /// may not carry the delegate itself (Swift 6).
+    @MainActor private static var turnOverGoneChecks = 0
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Escape with no modifier, outside a field being edited (there it cancels the edit) and with no menu open.
+            guard event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+                  let window = NSApp.keyWindow, !(window.firstResponder is NSText), NSApp.mainMenu?.highlightedItem == nil else { return event }
+            window.performClose(nil)
+            return nil
+        }
+        // TurnOver gone for four seconds: the window closes with it. An update's restart closes it too, which is wanted:
+        // a window left open through an update showed TurnOver as off until reopened (build 22).
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let running = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.turnover.reader").isEmpty
+                Self.turnOverGoneChecks = running ? 0 : Self.turnOverGoneChecks + 1
+                if Self.turnOverGoneChecks >= 2 { NSApp.terminate(nil) }
+            }
+        }
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 @main
 struct TurnOverSettingsApp: App {
     @StateObject private var model = Model()
+    @NSApplicationDelegateAdaptor(SettingsAppDelegate.self) private var delegate
+    init() {
+        // Tab reaches every control, pop-ups and sliders too, whatever the Mac's Keyboard navigation setting says: with
+        // it off, a Tab through Speech met only the ducking pop-up (an AppleVis reader, 25 Oct 2026). This app's domain.
+        UserDefaults.standard.set(2, forKey: "AppleKeyboardUIMode")
+    }
     var body: some Scene {
         WindowGroup("TurnOver Settings") { ContentView().environmentObject(model) }
             .windowResizability(.contentSize)

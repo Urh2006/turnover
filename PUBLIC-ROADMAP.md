@@ -5,9 +5,8 @@ for. Requests are weighed, not queued, and there are no dates or promises: thing
 sooner if someone sends a fix. To ask for something, use the idea form on GitHub (Send feedback in the TurnOver menu
 opens it).
 
-TurnOver works alongside VoiceOver. VoiceOver stays on: TurnOver reads every app by default, and Command Control Shift
-T gives the app in front to VoiceOver, or back. VoiceOver always handles security (password fields, Touch ID, macOS's
-own prompts). There are keyboard styles for VoiceOver's keys and NVDA's, with Narrator's and JAWS's on the way.
+TurnOver is a full screen reader: one reader speaks at a time, TurnOver while it is on and VoiceOver while it is off,
+and Command Control Period switches between them. There are keyboard styles for VoiceOver's keys and NVDA's, with Narrator's and JAWS's on the way.
 
 ## Plugins: coming back, in the open
 
@@ -18,8 +17,6 @@ PLUGIN-GUIDE.md says how to write one.
 
 ## Next
 
-- **The Windows style everywhere, even where VoiceOver reads.** NVDA's keys on top of VoiceOver in every app, not
-  only in TurnOver's. You could even let VoiceOver read every app and still use the Windows style's keys.
 - **Trackpad parity.** The trackpad already drives TurnOver in its apps. Next, every gesture behaving as it should for
   your keyboard style: VoiceOver's Trackpad Commander in the Mac style, NVDA's touch gestures in the Windows style.
 - **Apple's own apps, one at a time.** Pages and Numbers first, then Preview, Photos, Calendar, Contacts, Reminders

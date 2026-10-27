@@ -39,7 +39,7 @@ final class WordAppModule: AppModule {
             return Self.inBars(f) && f.attr("AXExpanded") as? Bool != true
         }
         // Word's sheets (Save changes on Command Q, Save As) keep Tab among their text fields, passing through the page:
-        // Don't Save, Cancel and Save were never reached (Urh, 21 Oct 2026; VoiceOver gets them with its own cursor).
+        // Don't Save, Cancel and Save were never reached (21 Oct 2026; VoiceOver gets them with its own cursor).
         // In a sheet, Tab and Shift+Tab are TurnOver's: every control in the sheet, in order, round.
         for forward in [true, false] {
             script(forward ? "word_sheetNext" : "word_sheetPrevious",

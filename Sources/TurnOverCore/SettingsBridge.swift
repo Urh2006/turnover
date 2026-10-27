@@ -4,7 +4,7 @@
 // itself would wait on its own main thread.) The app never writes the settings file: it sends each change here as a
 // patch, part of the settings file's JSON ({"speech": {"rate": 0.6}}), TurnOver merges it into its settings, saves,
 // puts it into effect, and answers with the whole settings so the app shows what is really set.
-// A few settings live outside the file (the say all voice, CoExist): their patches start with "_".
+// A few settings live outside the file (the say all voice): their patches start with "_".
 // The talk goes through TurnOver's control channel (TurnOverControl), which only programs signed by TurnOver's own
 // developer may use: before a code review on 18 Oct 2026 it was distributed notifications, which any program could
 // post (and change TurnOver's settings with) or hear (and read them all).
@@ -12,23 +12,60 @@ import Foundation
 import AppKit
 import TurnOverControl
 import TurnOverSpeech
+import AVFoundation
 
 public enum SettingsBridge {
     private static var started = false
-    /// Restart TurnOver (set by the app): CoExist changes need it.
-    public static var restart: (() -> Void)?
 
     /// The control channel up, and the settings' ops on it: "subscribe" (Settings opening: the settings now, and
     /// every change after), "ask" (the settings now), "patch" (a change).
+    /// Set by the app: the swap setting changed in the window (on or off).
+    public static var onSwapChanged: ((Bool) -> Void)?
+
+    /// The last ordinary app in front, apart from TurnOver and its Settings: what the window's per-app verbosity
+    /// list is for (27 Oct 2026).
+    private static var frontApp: (bundle: String, name: String)?
+    private static var frontObserver: NSObjectProtocol?
+
     public static func start() {
         guard !started else { return }
         started = true
+        frontObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { n in
+            guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.activationPolicy == .regular,
+                  let b = app.bundleIdentifier, !b.hasPrefix("com.turnover.") else { return }
+            let name = app.localizedName ?? b
+            // Only while the Settings window is running is the state sent: encoding it all on every app switch was
+            // too much for nothing (a code review, 27 Oct 2026).
+            let windowOpen = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.turnover.settings").isEmpty
+            MainActor.assumeIsolated {
+                frontApp = (b, name)
+                if windowOpen { sendState() }   // the window shows the app's name in its "For" list
+            }
+        }
         let server = ControlServer.shared
         server.log = { Log.info($0) }
         server.start(path: AppPaths.file("control.sock").path)
-        server.handlers["subscribe"] = { _, reply in Log.info("settings app: connected"); sendState(to: reply) }
-        server.handlers["ask"] = { _, reply in sendState(to: reply) }
+        // A window connecting, or asking (it does as it comes to the front), gets the voices as they are now; a change
+        // made in the window is answered from the list kept since.
+        server.handlers["subscribe"] = { _, reply in Log.info("settings app: connected"); languagesState = nil; sendState(to: reply) }
+        server.handlers["ask"] = { _, reply in languagesState = nil; sendState(to: reply) }
         server.handlers["patch"] = { message, _ in if let json = message["json"] as? String { apply(json) } }
+    }
+
+    /// The voices for other languages, as the window shows them: kept, not made again for every change. Made again
+    /// it asked the system for every voice once per language, about 1.6 s on the main thread after each switch was
+    /// pressed, so the switch's new state was said late and the next key waited (25 Oct 2026). Cleared when a window
+    /// connects or asks, and when a voice changes.
+    private static var languagesState: [[String: Any]]?
+    private static func otherLanguagesState() -> [[String: Any]] {
+        if let languagesState { return languagesState }
+        let all = AVSpeechSynthesisVoice.speechVoices()
+        let made: [[String: Any]] = Languages.otherLanguages(from: all).map { language in
+            let voices = Languages.voices(for: language.code, from: all).map { ["id": $0.identifier, "name": $0.name, "language": $0.language] }
+            return ["code": language.code, "name": language.name, "voices": voices]
+        }
+        languagesState = made
+        return made
     }
 
     /// The settings as they are now, and the ones kept outside the file, for the app to show: to the one that asked,
@@ -44,14 +81,12 @@ public enum SettingsBridge {
         dict["_kokoroMode"] = KokoroVoice.mode
         dict["_kokoroVoice"] = KokoroVoice.voice
         dict["_kokoroSpeed"] = KokoroVoice.speed
-        dict["_coexist"] = Coexist.wouldBeOn
         dict["_brailleTables"] = brailleTables
         dict["_outputDevices"] = SpeechPlayer.outputDevices().map { ["uid": $0.uid, "name": $0.name] }
         dict["_speechPortApps"] = SpeechPort.shared.appDecisions.map { ["id": $0.id, "name": $0.name, "allowed": $0.allowed] }
-        dict["_otherLanguages"] = Languages.otherLanguages().map { language in
-            let voices = Languages.voices(for: language.code).map { ["id": $0.identifier, "name": $0.name, "language": $0.language] }
-            return ["code": language.code, "name": language.name, "voices": voices]
-        }
+        dict["_otherLanguages"] = otherLanguagesState()
+        // The app the window's "For this app" means: the last ordinary app in front that isn't TurnOver's own.
+        if let f = frontApp { dict["_frontApp"] = ["bundle": f.bundle, "name": f.name] }
         guard let out = try? JSONSerialization.data(withJSONObject: dict), let s = String(data: out, encoding: .utf8) else { return }
         if let reply { reply(["op": "state", "json": s]) } else { ControlServer.shared.broadcast(["op": "state", "json": s]) }
     }
@@ -76,14 +111,8 @@ public enum SettingsBridge {
         if let m = patch["_kokoroMode"] as? String { KokoroVoice.mode = m == "off" ? "off" : "reading" }
         if let v = patch["_kokoroVoice"] as? String, KokoroVoice.englishVoices.contains(v) { KokoroVoice.voice = v; KokoroVoice.mode = "reading"; KokoroVoice.preview(v) }
         if let s = patch["_kokoroSpeed"] as? Double { KokoroVoice.speed = min(2, max(0.6, s)) }
+        if patch["_restartSteam"] as? Bool == true { Games.restartSteam() }
         if let a = patch["_speechPortAllowed"] as? [String: Any], let id = a["id"] as? String, let on = a["allowed"] as? Bool { SpeechPort.shared.setAllowed(id, on) }
-        if let on = patch["_coexist"] as? Bool, on != Coexist.wouldBeOn {
-            UserDefaults.standard.set(on, forKey: "coexist")
-            Speech.speakMessage(on ? "CoExist on. TurnOver restarts." : "CoExist off. TurnOver restarts.")
-            Log.info("settings app: CoExist \(on ? "on" : "off"); restarting")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { (restart ?? TurnOverMenu.shared.relaunch)?() }
-            return
-        }
         // The file's settings: merged section by section, then read back through Config, so a value of the wrong kind
         // is simply left as it was.
         let filePatch = patch.filter { !$0.key.hasPrefix("_") }
@@ -114,9 +143,12 @@ public enum SettingsBridge {
             if before.general.keyboardStyle != next.general.keyboardStyle { GlobalCommands.setKeyboardStyle(next.general.style) }
             if before.braille.bluetooth != next.braille.bluetooth, next.braille.bluetooth { BrailleDisplays.shared.lookNow() }
             if before.applications.perAppReaders != next.applications.perAppReaders { TurnOverMenu.shared.leadModeChanged?() }
+            if before.applications.swapWithVoiceOver != next.applications.swapWithVoiceOver { onSwapChanged?(next.applications.swapWithVoiceOver) }
+            // Steam's switches from the window do what the menu's do.
+            if before.games.readBigPicture != next.games.readBigPicture { Games.restartBigPicture() }
             let voiceChanged = before.speech.voice != next.speech.voice
             let languageVoicesChanged = before.speech.languageVoices != next.speech.languageVoices
-            if voiceChanged || languageVoicesChanged { Languages.forget() }
+            if voiceChanged || languageVoicesChanged { Languages.forget(); languagesState = nil }
             // The fork's braille hooks, as the menu's items run them.
             if before.braille.autoScrollSeconds != next.braille.autoScrollSeconds { Braille.autoScrollIntervalChanged() }
             if before.braille.blinkRateMs != next.braille.blinkRateMs { Braille.blinkRateChanged() }

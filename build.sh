@@ -48,10 +48,20 @@ fi
 
 mkdir -p "$BUILD"
 # A failed compile must not install yesterday's binary.
-rm -f "$BUILD/release/turnover" "$BUILD/release/turnover-probe" "$BUILD/release/turnover-plugin" "$BUILD/release/turnover-key" "$BUILD/release/libTurnOverCore.dylib"
+# (Every product, the Settings app and the test runners too: a stale one of those installed or ran as if new. From an
+# outside audit, pull request 13, 26 Oct 2026.)
+for f in turnover turnover-probe turnover-plugin turnover-key turnover-settings turnover-tests turnover-coretest libTurnOverCore.dylib; do
+  rm -f "$BUILD/release/$f"
+done
 # The recipes and official listings, built into the program (make-embedded.py).
 python3 make-embedded.py || { echo "STOP: make-embedded.py failed"; exit 1; }
-swift build -c release --scratch-path "$BUILD" $SWIFTFLAGS 2>&1 | grep -vE '^\[[0-9]+/[0-9]+\]' || true
+# The compiler's own exit status decides, not only whether the files exist: a build that failed after a product was
+# written went on to install (the same audit).
+set +e
+swift build -c release --scratch-path "$BUILD" $SWIFTFLAGS 2>&1 | grep -vE '^\[[0-9]+/[0-9]+\]'
+BUILD_STATUS=${PIPESTATUS[0]}
+set -e
+[ "$BUILD_STATUS" -eq 0 ] || { echo "build failed"; exit "$BUILD_STATUS"; }
 [ -x "$BUILD/release/turnover" ] && [ -x "$BUILD/release/turnover-key" ] && [ -f "$BUILD/release/libTurnOverCore.dylib" ] || { echo "build failed"; exit 1; }
 # The unit tests (Sources/TurnOverTests): a failing test stops the install (8 Oct 2026). TURNOVER_SKIP_TESTS=1 to skip.
 if [ "$TURNOVER_SKIP_TESTS" != 1 ]; then
@@ -62,8 +72,14 @@ fi
 BIN="$BUILD/release"
 if [ "$TURNOVER_UNIVERSAL" = 1 ]; then
   X86="$BUILD-x86_64"
-  rm -f "$X86/release/turnover" "$X86/release/turnover-plugin" "$X86/release/turnover-key" "$X86/release/libTurnOverCore.dylib"
-  swift build -c release --scratch-path "$X86" --triple x86_64-apple-macosx14.0 $SWIFTFLAGS 2>&1 | grep -vE '^\[[0-9]+/[0-9]+\]' || true
+  for f in turnover turnover-probe turnover-plugin turnover-key turnover-settings turnover-tests turnover-coretest libTurnOverCore.dylib; do
+    rm -f "$X86/release/$f"
+  done
+  set +e
+  swift build -c release --scratch-path "$X86" --triple x86_64-apple-macosx14.0 $SWIFTFLAGS 2>&1 | grep -vE '^\[[0-9]+/[0-9]+\]'
+  X86_BUILD_STATUS=${PIPESTATUS[0]}
+  set -e
+  [ "$X86_BUILD_STATUS" -eq 0 ] || { echo "Intel build failed"; exit "$X86_BUILD_STATUS"; }
   [ -x "$X86/release/turnover" ] && [ -x "$X86/release/turnover-key" ] && [ -f "$X86/release/libTurnOverCore.dylib" ] || { echo "Intel build failed"; exit 1; }
   BIN="$BUILD/universal"
   rm -rf "$BIN"; mkdir -p "$BIN"
@@ -77,11 +93,11 @@ for arch in $(lipo -archs "$BIN/libTurnOverCore.dylib"); do
   strings -arch "$arch" "$BIN/libTurnOverCore.dylib" | grep -q "^$MARKER$" || { echo "STOP: the $arch slice of the core has no $MARKER"; exit 1; }
 done
 
-# TurnOver's helper programs: Steam speech (14 Oct 2026), Trackpad gestures and VoiceOver quiet, in Helpers/. Each
+# TurnOver's helper programs: Steam speech (14 Oct 2026) and Trackpad gestures, in Helpers/. Each
 # built, its self-test run, carried in the bundle and signed with TurnOver. A release build stops without them.
 HELPERSRC="$(cd "$(dirname "$0")" && pwd)/Helpers"
 HELPERBINS=()
-for H in steam-speech trackpad-gestures voiceover-quiet; do
+for H in steam-speech trackpad-gestures; do
   SRC="$HELPERSRC/$H"
   if [ ! -f "$SRC/Package.swift" ]; then
     [ "$TURNOVER_UNIVERSAL" = 1 ] && { echo "STOP: $SRC is missing: a build for testers needs it"; exit 1; }
@@ -94,7 +110,7 @@ for H in steam-speech trackpad-gestures voiceover-quiet; do
   BINH="$SB/release/$H"
   if [ "$TURNOVER_UNIVERSAL" = 1 ]; then
     rm -f "$SB-x86_64/release/$H"
-    # The helper's own lowest macOS: voiceover-quiet needs 14.2 (process taps), which TurnOver checks before starting it.
+    # The helper's own lowest macOS, from its Package.swift.
     MINOS=$(grep -o 'macOS("[0-9.]*")' "$SRC/Package.swift" | grep -o '[0-9.]*' | head -1); MINOS=${MINOS:-14.0}
     swift build -c release --package-path "$SRC" --scratch-path "$SB-x86_64" --triple x86_64-apple-macosx$MINOS 2>&1 | grep -E "error:" || true
     [ -x "$SB-x86_64/release/$H" ] || { echo "Intel build of $H failed"; exit 1; }
@@ -187,7 +203,7 @@ for f in "$SPK/XPCServices/Installer.xpc" "$SPK/XPCServices/Downloader.xpc" "$SP
 done
 sign --force --sign "$IDENTITY" --identifier com.turnover.core "$APP/Contents/Frameworks/libTurnOverCore.dylib"
 [ -f "$APP/Contents/MacOS/turnover-plugin" ] && sign --force --sign "$IDENTITY" --identifier com.turnover.plugin-tool "$APP/Contents/MacOS/turnover-plugin"
-for h in steam-speech trackpad-gestures voiceover-quiet; do [ -f "$APP/Contents/Helpers/$h" ] && sign --force --sign "$IDENTITY" --identifier "com.turnover.$h" "$APP/Contents/Helpers/$h"; done
+for h in steam-speech trackpad-gestures; do [ -f "$APP/Contents/Helpers/$h" ] && sign --force --sign "$IDENTITY" --identifier "com.turnover.$h" "$APP/Contents/Helpers/$h"; done
 sign --force --sign "$IDENTITY" --identifier "$BUNDLEID" "$APP"
 
 # Never install a TurnOver macOS will not trust: it would come up with no permissions and no speech.
@@ -207,6 +223,9 @@ if [ "$1" != "--no-install" ]; then
   pkill -x turnover 2>/dev/null || true
   # TurnOver Key: launchd names it by its bundle identifier, not its executable. TurnOver starts the new one.
   pkill -x turnover-key 2>/dev/null || true
+  # A Settings window left open from the copy being replaced: the new TurnOver turns it away (its signature is checked
+  # against files no longer there) and it shows TurnOver as off until reopened (issue 77; again on 25 Oct 2026).
+  pkill -x turnover-settings 2>/dev/null || true
   pkill -f "com.turnover.key" 2>/dev/null || true
   pkill -x turnover 2>/dev/null || true
   sleep 0.5
