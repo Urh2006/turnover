@@ -6,6 +6,10 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 
 ### Changed
 
+- Braille: Apple USB and HID drivers are polled and written on the braille thread, as Bluetooth drivers are, so a
+  display does not hold up speech. Reads and writes cannot enter each other while a driver waits, the latest
+  pending frame is kept, and handing back to VoiceOver waits for the driver to unload.
+
 - A window with nothing TurnOver can read (a custom-drawn or OpenGL window: Parallels' installation assistant, Bambu
   Studio's plate) says so a moment after it comes to the front, and names the key for screen recognition in the
   keyboard style in use: VO-Shift-L with VoiceOver keys, the TurnOver key with R with NVDA or JAWS keys. It said
