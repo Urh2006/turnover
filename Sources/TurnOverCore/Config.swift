@@ -285,16 +285,21 @@ public struct Config: Codable {
         public var autoRefresh = false
         /// NVDA's "Automatically say all on result".
         public var autoSayAll = false
+        /// After Return clicks something in the result, recognise again instead of closing (Oliver, 28 Oct 2026: a
+        /// dialog's OK, then the screen that follows, without pressing the key again). On by default.
+        public var refreshAfterClick = true
         public init() {}
-        enum Keys: String, CodingKey { case autoRefresh, autoSayAll }
+        enum Keys: String, CodingKey { case autoRefresh, autoSayAll, refreshAfterClick }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             autoRefresh = (try? c.decodeIfPresent(Bool.self, forKey: .autoRefresh)) ?? false
             autoSayAll = (try? c.decodeIfPresent(Bool.self, forKey: .autoSayAll)) ?? false
+            refreshAfterClick = (try? c.decodeIfPresent(Bool.self, forKey: .refreshAfterClick)) ?? true
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             try c.encode(autoRefresh, forKey: .autoRefresh); try c.encode(autoSayAll, forKey: .autoSayAll)
+            try c.encode(refreshAfterClick, forKey: .refreshAfterClick)
         }
     }
     /// The rising tide: which applications TurnOver leads in; VoiceOver has the rest (NVDA: sleep mode, inverted).
@@ -542,20 +547,11 @@ public struct Config: Codable {
         public var mode = "followCursors"
         /// NVDA's auto scroll (NVDA+Alt+K, L, J): seconds a window stays before the next.
         public var autoScrollSeconds = 3.0
-        /// NVDA's focus context presentation: "changes" (fill the display when the context changes), "scroll" (only
-        /// when panning back) or "always" (always fill the display).
-        public var focusContext = "changes"
         /// Panning on to another line moves the caret there ("line"), panning moves it to the start of each display's
         /// width ("window"), or panning leaves it where it was ("off").
         public var panMovesCaret = "line"
-        /// NVDA: the review cursor's own shape ("78", "8", "all"; NVDA's default is dot 8 alone).
-        public var cursorShapeReview = "8"
-        /// NVDA: read by paragraph.
-        public var readByParagraph = false
-        /// NVDA: speak the character when routing the cursor in text.
-        public var speakCharacterOnRouting = true
         public init() {}
-        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, focusContext, panMovesCaret, cursorShapeReview, readByParagraph, speakCharacterOnRouting }
+        enum Keys: String, CodingKey { case table, expandAtCursor, contractedInput, inputEcho, showMessages, messageSeconds, showCursor, blinkCursor, blinkRateMs, cursorShape, wordWrap, showSelection, interruptSpeechWhileScrolling, bluetooth, tether, mode, autoScrollSeconds, panMovesCaret }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             table = (try? c.decodeIfPresent(String.self, forKey: .table)) ?? ""
@@ -575,11 +571,7 @@ public struct Config: Codable {
             tether = (try? c.decodeIfPresent(String.self, forKey: .tether)) ?? "auto"
             mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? "followCursors"
             autoScrollSeconds = (try? c.decodeIfPresent(Double.self, forKey: .autoScrollSeconds)) ?? 3.0
-            focusContext = (try? c.decodeIfPresent(String.self, forKey: .focusContext)) ?? "changes"
             panMovesCaret = (try? c.decodeIfPresent(String.self, forKey: .panMovesCaret)) ?? "line"
-            cursorShapeReview = (try? c.decodeIfPresent(String.self, forKey: .cursorShapeReview)) ?? "8"
-            readByParagraph = (try? c.decodeIfPresent(Bool.self, forKey: .readByParagraph)) ?? false
-            speakCharacterOnRouting = (try? c.decodeIfPresent(Bool.self, forKey: .speakCharacterOnRouting)) ?? true
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
@@ -590,9 +582,7 @@ public struct Config: Codable {
             try c.encode(cursorShape, forKey: .cursorShape); try c.encode(wordWrap, forKey: .wordWrap); try c.encode(showSelection, forKey: .showSelection)
             try c.encode(interruptSpeechWhileScrolling, forKey: .interruptSpeechWhileScrolling); try c.encode(bluetooth, forKey: .bluetooth)
             try c.encode(tether, forKey: .tether); try c.encode(mode, forKey: .mode); try c.encode(autoScrollSeconds, forKey: .autoScrollSeconds)
-            try c.encode(focusContext, forKey: .focusContext); try c.encode(panMovesCaret, forKey: .panMovesCaret)
-            try c.encode(cursorShapeReview, forKey: .cursorShapeReview); try c.encode(readByParagraph, forKey: .readByParagraph)
-            try c.encode(speakCharacterOnRouting, forKey: .speakCharacterOnRouting)
+            try c.encode(panMovesCaret, forKey: .panMovesCaret)
         }
     }
     public var general = General()

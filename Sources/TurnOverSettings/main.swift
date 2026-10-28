@@ -79,10 +79,6 @@ final class Model: ObservableObject {
     func number(_ section: String, _ key: String) -> Binding<Double> {
         Binding(get: { (self.get(section, key) as? NSNumber)?.doubleValue ?? 0 }, set: { self.set(section, key, Int($0.rounded())) })
     }
-    /// A number kept with its fraction (seconds in half steps).
-    func decimal(_ section: String, _ key: String) -> Binding<Double> {
-        Binding(get: { (self.get(section, key) as? NSNumber)?.doubleValue ?? 0 }, set: { self.set(section, key, $0) })
-    }
 }
 
 enum Pane: String, CaseIterable, Identifiable {
@@ -277,75 +273,6 @@ struct SpeechView: View {
     }
 }
 
-/// NVDA's braille settings, as TurnOver has them (the TurnOver menu's Braille has the same).
-struct BrailleView: View {
-    @EnvironmentObject var model: Model
-    private var tables: [[String]] { model.special("_brailleTables") as? [[String]] ?? [] }
-    private func shapes(_ title: String, _ key: String, _ fallback: String) -> some View {
-        Picker(title, selection: model.string("braille", key, fallback)) {
-            Text("Dots 7 and 8").tag("78"); Text("Dot 8").tag("8"); Text("All dots").tag("all")
-        }
-    }
-    var body: some View {
-        Form {
-            Section("Text") {
-                Picker("Braille table", selection: model.string("braille", "table", "")) {
-                    Text("The system's for my language").tag("")
-                    ForEach(tables.filter { $0.count == 2 }, id: \.[0]) { t in Text(t[1]).tag(t[0]) }
-                }
-                Toggle("Show the word at the cursor uncontracted", isOn: model.bool("braille", "expandAtCursor"))
-                Toggle("Keep words whole", isOn: model.bool("braille", "wordWrap"))
-                Toggle("Read by paragraph", isOn: model.bool("braille", "readByParagraph"))
-            }
-            Section("Following") {
-                Picker("Braille follows", selection: model.string("braille", "tether", "auto")) {
-                    Text("Automatically").tag("auto"); Text("The focus").tag("focus"); Text("The review cursor").tag("review")
-                }
-                Picker("Braille mode", selection: model.string("braille", "mode", "followCursors")) {
-                    Text("Follow the cursors").tag("followCursors"); Text("Show what is spoken").tag("speechOutput")
-                }
-                Picker("Focus context", selection: model.string("braille", "focusContext", "changes")) {
-                    Text("Fill the display when the context changes").tag("changes"); Text("Only when panning back").tag("scroll"); Text("Always fill the display").tag("always")
-                }
-                Picker("Panning moves the cursor", selection: model.string("braille", "panMovesCaret", "line")) {
-                    Text("Line by line").tag("line"); Text("To the text shown").tag("window"); Text("Off").tag("off")
-                }
-                Toggle("Stop speech while panning", isOn: model.bool("braille", "interruptSpeechWhileScrolling"))
-                Stepper("Auto scroll: every \(model.decimal("braille", "autoScrollSeconds").wrappedValue, specifier: "%.1f") seconds",
-                        value: model.decimal("braille", "autoScrollSeconds"), in: 0.5...20, step: 0.5)
-                Toggle("Speak the character when routing", isOn: model.bool("braille", "speakCharacterOnRouting"))
-            }
-            Section("Cursor") {
-                Toggle("Show the cursor", isOn: model.bool("braille", "showCursor"))
-                Toggle("Blink", isOn: model.bool("braille", "blinkCursor"))
-                Stepper("Blink rate: \(model.number("braille", "blinkRateMs").wrappedValue, specifier: "%.0f") milliseconds",
-                        value: model.number("braille", "blinkRateMs"), in: 200...2000, step: 100)
-                shapes("Cursor shape", "cursorShape", "78")
-                shapes("Review cursor shape", "cursorShapeReview", "8")
-                Toggle("Selection with dots 7 and 8", isOn: model.bool("braille", "showSelection"))
-            }
-            Section("Messages") {
-                Picker("Messages on the display", selection: model.string("braille", "showMessages", "timeout")) {
-                    Text("For a time").tag("timeout"); Text("Until a key is pressed").tag("indefinitely"); Text("Off").tag("off")
-                }
-                Stepper("Message time: \(model.number("braille", "messageSeconds").wrappedValue, specifier: "%.0f") seconds",
-                        value: model.number("braille", "messageSeconds"), in: 1...30, step: 1)
-            }
-            Section("Braille keyboard") {
-                Picker("Typing", selection: model.bool("braille", "contractedInput")) {
-                    Text("Contracted, a word at a time").tag(true); Text("Uncontracted, letter by letter").tag(false)
-                }
-                Picker("Speak braille typing", selection: model.string("braille", "inputEcho", "words")) {
-                    Text("Words").tag("words"); Text("Characters").tag("characters"); Text("Characters and words").tag("both"); Text("Off").tag("off")
-                }
-            }
-            Section("Displays") {
-                Toggle("Look for a display paired over Bluetooth", isOn: model.bool("braille", "bluetooth"))
-            }
-        }.formStyle(.grouped).navigationTitle("Braille")
-    }
-}
-
 struct OtherLanguage {
     struct Voice { let id: String; let name: String; let language: String }
     let code: String
@@ -384,6 +311,20 @@ struct OtherLanguageRow: View {
         }
         Slider(value: ratePercent, in: 10...100, step: 5) { Text("\(language.name) rate") }
             .accessibilityValue(rates[language.code] == nil ? "\(Int(ratePercent.wrappedValue)), same as the main voice" : "\(Int(ratePercent.wrappedValue))")
+    }
+}
+
+/// Braille: starts with the one setting that had no control once the menu lost its settings (#27, 22 Oct 2026); the
+/// rest of braille's settings, still in Tools, join it in their own change.
+struct BrailleView: View {
+    @EnvironmentObject var model: Model
+    var body: some View {
+        Form {
+            Picker("Panning moves the cursor", selection: model.string("braille", "panMovesCaret", "line")) {
+                Text("Line by line").tag("line"); Text("To the text shown").tag("window"); Text("Off").tag("off")
+            }
+            Text("Panning on to another line moves the caret there, so the arrows carry on from what was read. Tethered to review, panning moves only the review cursor.").font(.caption)
+        }.formStyle(.grouped).navigationTitle("Braille")
     }
 }
 
@@ -546,6 +487,8 @@ struct RecognitionView: View {
         Form {
             Toggle("Read new text as it appears, while a result is open", isOn: model.bool("recognition", "autoRefresh"))
             Toggle("Read the whole result as it opens", isOn: model.bool("recognition", "autoSayAll"))
+            Toggle("After Return clicks something, recognise again", isOn: model.bool("recognition", "refreshAfterClick"))
+            Text("The screen that follows a click is read without pressing the key again; off, the result closes after the click.").font(.caption)
         }.formStyle(.grouped).navigationTitle("Screen recognition")
     }
 }
@@ -625,6 +568,9 @@ struct GeneralView: View {
 /// readers per app, folded away (22 Oct 2026; last in the list, the place for the things most people never touch).
 struct ReadersView: View {
     @EnvironmentObject var model: Model
+    private var coexist: Binding<Bool> {
+        Binding(get: { model.special("_coexist") as? Bool ?? false }, set: { model.setSpecial("_coexist", $0) })
+    }
     var body: some View {
         Form {
             Section {
@@ -636,7 +582,11 @@ struct ReadersView: View {
                     .accessibilityHint("Off: each reader has its own switch and neither turns the other on or off; TurnOver is still quiet while VoiceOver is on.")
                 Text("On: TurnOver turns VoiceOver off as it starts and on as it quits, comes on when VoiceOver turns off and steps aside when VoiceOver comes on. Off: each reader has its own switch and neither turns the other on or off, for VoiceOver reading inside a virtual machine such as Parallels. Either way one reader speaks at a time: while VoiceOver is on, TurnOver is quiet.").font(.caption)
             }
-            DisclosureGroup("Experimental: readers per app") {
+            // A plain section, not a disclosure group: the triangle took the focus but neither Return nor VO Space
+            // opened it (Oliver, 28 Oct 2026: "I can't get into the experimental part").
+            Section(header: Text("Experimental: readers per app, CoExist")) {
+                Toggle("CoExist: VoiceOver stays running alongside TurnOver", isOn: coexist)
+                Text("VoiceOver is kept quiet by an audio tap where TurnOver reads and keeps passwords and macOS's own prompts. Removed on 24 Oct 2026 and back as an experiment: it can leave a Mac silent if macOS asks for audio permission while VoiceOver is muted. Changing it restarts TurnOver.").font(.caption)
                 Toggle("Readers per app", isOn: model.bool("applications", "perAppReaders"))
                 Text("A list of apps for each reader, a mode (TurnOver in its apps, everywhere, or VoiceOver everywhere), and switching between the readers as you change apps. The list is under Tools in the TurnOver menu while this is on. Off, TurnOver reads everywhere while it is on.").font(.caption)
             }

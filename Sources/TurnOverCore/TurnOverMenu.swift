@@ -53,8 +53,18 @@ public final class TurnOverMenu {
     /// Whether TurnOver reads an app (the lead watcher's answer), and switching the app in front to the other reader.
     public var readsApp: ((String) -> Bool)?
     public var switchReader: (() -> Void)?
-    /// Quitting, the app's way (TurnOver steps back first).
+    /// Quitting, the app's way (coexisting: VoiceOver gets its apps back first).
     public var quit: (() -> Void)?
+    /// The coexist option: VoiceOver stays on and is silenced in the apps of the list, instead of being turned off
+    /// where TurnOver reads. Needs a restart.
+    public static func setCoexist(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "coexist")
+        Speech.speakMessage(on ? "CoExist on. TurnOver restarts, then VoiceOver Utility opens and closes by itself to set VoiceOver up." : "CoExist off. TurnOver restarts, and VoiceOver's settings are put back.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { TurnOverMenu.shared.relaunch?() }
+    }
+    /// Starts TurnOver again (set by the app): after a change of CoExist.
+    public var relaunch: (() -> Void)?
+    /// CoExist: VoiceOver's quiet list made again from the apps on the Mac now (set by the app). Nil without CoExist.
     /// The Screen Curtain setting changed: the app puts it into effect (the curtain lives in the app, not the core).
     public var onScreenCurtainChanged: (() -> Void)?
 
@@ -305,10 +315,73 @@ public final class TurnOverMenu {
         var items: [MenuItem] = []
         if let l = NewToTry.latest { items.append(MenuItem("What to test in build \(l.build)", .submenu { NewToTry.menuItems() })) }
         items.append(MenuItem("About TurnOver", .action {
-            Speech.speakMessage("TurnOver \(Edition.version), build \(Edition.build), a screen reader for the Mac. It reads the apps you give it under Tools. Feature requests and bug reports through GitHub.")
+            Speech.speakMessage("TurnOver \(Edition.version), build \(Edition.build), a screen reader for the Mac. It reads the apps you give it under Tools\(Coexist.on ? "; with CoExist on, VoiceOver reads the rest" : ""). Feature requests and bug reports through GitHub.")
         }))
         items.append(contentsOf: aboutItems)
         return items
+    }
+
+    /// How items are read in this app (28 Oct 2026; Ash's idea, as Oliver read it: the order the pieces of an
+    /// announcement come in, and which are said, app by app). A list of the pieces in their spoken order; each opens
+    /// a short submenu: said or not, move up, move down. Saved for this app; the Settings window keeps the default.
+    private func readingOrderItem(bundle: String, name: String) -> MenuItem {
+        func current() -> Config.Verbosity { config.presentation.verbosityByApp[bundle] ?? config.presentation.verbosity }
+        func save(_ v: Config.Verbosity) { var t = v; t.tidy(); config.presentation.verbosityByApp[bundle] = t; config.save() }
+        func title(_ piece: String, at i: Int, in v: Config.Verbosity) -> String {
+            "\(i + 1). \(Config.Verbosity.titles[piece] ?? piece), \(v.says(piece) ? "said" : "not said")"
+        }
+        func list() -> [MenuItem] {
+            let v = current()
+            var out: [MenuItem] = []
+            for (i, piece) in v.order.enumerated() {
+                out.append(MenuItem(title(piece, at: i, in: v), .submenu {
+                    [MenuItem("Said", .toggle(get: { current().says(piece) }, set: { [weak self] on in
+                         var v = current(); v.set(piece, said: on); save(v)
+                         self?.refreshParent(with: list())   // the list under this submenu says "said" or "not said" (a review, 28 Oct 2026)
+                     }), hint: "Return switches whether this piece is spoken in \(name)"),
+                     MenuItem("Move up", .select { [weak self] in
+                         var v = current(); guard let j = v.order.firstIndex(of: piece), j > 0 else { Speech.speakMessage("already first"); return }
+                         v.order.swapAt(j, j - 1); save(v)
+                         self?.popAndReplace(with: list(), index: j - 1, say: "\(Config.Verbosity.titles[piece] ?? piece) is now \(j)\(Self.ordinal(j))")
+                     }, hint: "Said earlier"),
+                     MenuItem("Move down", .select { [weak self] in
+                         var v = current(); guard let j = v.order.firstIndex(of: piece), j < v.order.count - 1 else { Speech.speakMessage("already last"); return }
+                         v.order.swapAt(j, j + 1); save(v)
+                         self?.popAndReplace(with: list(), index: j + 1, say: "\(Config.Verbosity.titles[piece] ?? piece) is now \(j + 2)\(Self.ordinal(j + 2))")
+                     }, hint: "Said later")]
+                }, hint: "Return: said or not, move up, move down"))
+            }
+            if config.presentation.verbosityByApp[bundle] != nil {
+                out.append(MenuItem("Use the default order in \(name) again", .select { [weak self] in
+                    config.presentation.verbosityByApp[bundle] = nil; config.save()
+                    self?.replaceTop(with: list(), index: 0, say: "the default order")
+                }, hint: "Forgets this app's own order; the Settings window's default applies"))
+            }
+            return out
+        }
+        return MenuItem("How items are read in \(name)", .submenu { list() },
+                        hint: "The pieces of an announcement in the order they are said; each can be moved or switched off, for this app only")
+    }
+    private static func ordinal(_ n: Int) -> String {
+        switch n % 10 { case 1 where n % 100 != 11: return "st"; case 2 where n % 100 != 12: return "nd"; case 3 where n % 100 != 13: return "rd"; default: return "th" }
+    }
+    /// The list on top of the menu rebuilt in place (a change made from a submenu of it): back to it, at `index`.
+    private func popAndReplace(with items: [MenuItem], index: Int, say: String) {
+        if stack.count > 1 { stack.removeLast() }
+        replaceTop(with: items, index: index, say: say)
+    }
+    /// The list under the top one rebuilt, its place kept (a toggle in a submenu changed what the parent shows).
+    private func refreshParent(with items: [MenuItem]) {
+        guard stack.count > 1 else { return }
+        let parent = stack[stack.count - 2]
+        stack[stack.count - 2] = (parent.title, items, max(0, min(items.count - 1, parent.index)))
+    }
+    private func replaceTop(with items: [MenuItem], index: Int, say: String) {
+        guard !stack.isEmpty else { return }
+        let top = stack.removeLast()
+        stack.append((top.title, items, max(0, min(items.count - 1, index))))
+        Speech.speakMessage(say)
+        announce()
     }
 
     private func thisAppItem() -> MenuItem? {
@@ -324,6 +397,7 @@ public final class TurnOverMenu {
             items.append(MenuItem("\(name) is read by \(turnOver ? "TurnOver" : "VoiceOver")", .action { self.switchReader?() },
                                   hint: "Return gives it to \(turnOver ? "VoiceOver" : "TurnOver"), and remembers"))
             items += own
+            items.append(self.readingOrderItem(bundle: bundle, name: name))
             items.append(MenuItem("Describe the image at the cursor", .action { GlobalCommands.shared.script(named: "describeImage")?.handler(KeyboardGesture(keyCode: 0, modifiers: [], characters: "", timestamp: 0, isRepeat: false, flags: [])) },
                                   hint: "What the picture shows and any text in it"))
             if Edition.includesPlugins {
@@ -641,34 +715,14 @@ public final class TurnOverMenu {
                     step: 1, min: 1, max: 30, format: { "\(Int($0.rounded())) second\(Int($0.rounded()) == 1 ? "" : "s")" }), hint: "For each display's width of message"),
             ] }),
             MenuItem("Keep words whole", .toggle(get: { config.braille.wordWrap }, set: { config.braille.wordWrap = $0; Braille.refreshSoon() }), hint: "A word is not split across the end of the display"),
-            MenuItem("Focus context", .cycle(options: ["fill the display when the context changes", "only when panning back", "always fill the display"],
-                get: { ["changes", "scroll", "always"].firstIndex(of: config.braille.focusContext) ?? 0 },
-                set: { config.braille.focusContext = ["changes", "scroll", "always"][$0]; Braille.refreshSoon() }),
-                hint: "The dialog, list or toolbar you are in, shown in front of the item, as NVDA does"),
-            MenuItem("Read by paragraph", .toggle(get: { config.braille.readByParagraph }, set: { config.braille.readByParagraph = $0; Braille.refreshSoon() }),
-                     hint: "The display shows a paragraph at a time, and its line keys move by paragraph"),
-            MenuItem("Speak the character when routing", .toggle(get: { config.braille.speakCharacterOnRouting }, set: { config.braille.speakCharacterOnRouting = $0 })),
-            MenuItem("Panning moves the cursor", .cycle(options: ["line by line", "to the text shown", "off"],
-                get: { ["line", "window", "off"].firstIndex(of: config.braille.panMovesCaret) ?? 0 },
-                set: { config.braille.panMovesCaret = ["line", "window", "off"][$0] }),
-                hint: "Where you read on the display, the arrows carry on from: line by line, or exactly from the text shown"),
-            MenuItem("Braille follows", .cycle(options: ["automatically", "the focus", "the review cursor"],
-                get: { ["auto", "focus", "review"].firstIndex(of: config.braille.tether) ?? 0 },
-                set: { config.braille.tether = ["auto", "focus", "review"][$0]; Braille.refreshSoon() }), hint: "NVDA's braille tether"),
-            MenuItem("Braille mode", .cycle(options: ["follow the cursors", "show what is spoken"],
-                get: { config.braille.mode == "speechOutput" ? 1 : 0 },
-                set: { config.braille.mode = $0 == 1 ? "speechOutput" : "followCursors"; Braille.refreshSoon() })),
             MenuItem("Cursor", .submenu { [
                 MenuItem("Show the cursor", .toggle(get: { config.braille.showCursor }, set: { config.braille.showCursor = $0; Braille.refreshSoon() })),
                 MenuItem("Blink", .toggle(get: { config.braille.blinkCursor }, set: { config.braille.blinkCursor = $0; Braille.refreshSoon() })),
-                MenuItem("Blink rate", .number(get: { Double(config.braille.blinkRateMs) }, set: { config.braille.blinkRateMs = Int($0); Braille.blinkRateChanged() },
+                MenuItem("Blink rate", .number(get: { Double(config.braille.blinkRateMs) }, set: { config.braille.blinkRateMs = Int($0) },
                     step: 100, min: 200, max: 2000, format: { "\(Int($0.rounded())) milliseconds" })),
                 MenuItem("Shape", .cycle(options: ["dots 7 and 8", "dot 8", "all dots"],
                     get: { ["78", "8", "all"].firstIndex(of: config.braille.cursorShape) ?? 0 },
                     set: { config.braille.cursorShape = ["78", "8", "all"][$0]; Braille.refreshSoon() })),
-                MenuItem("Review cursor shape", .cycle(options: ["dots 7 and 8", "dot 8", "all dots"],
-                    get: { ["78", "8", "all"].firstIndex(of: config.braille.cursorShapeReview) ?? 1 },
-                    set: { config.braille.cursorShapeReview = ["78", "8", "all"][$0]; Braille.refreshSoon() })),
                 MenuItem("Selection with dots 7 and 8", .toggle(get: { config.braille.showSelection }, set: { config.braille.showSelection = $0; Braille.refreshSoon() })),
             ] }),
             MenuItem("Stop speech while panning", .toggle(get: { config.braille.interruptSpeechWhileScrolling }, set: { config.braille.interruptSpeechWhileScrolling = $0 })),

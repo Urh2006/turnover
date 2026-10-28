@@ -4,7 +4,7 @@
 // itself would wait on its own main thread.) The app never writes the settings file: it sends each change here as a
 // patch, part of the settings file's JSON ({"speech": {"rate": 0.6}}), TurnOver merges it into its settings, saves,
 // puts it into effect, and answers with the whole settings so the app shows what is really set.
-// A few settings live outside the file (the say all voice): their patches start with "_".
+// A few settings live outside the file (the say all voice, CoExist): their patches start with "_".
 // The talk goes through TurnOver's control channel (TurnOverControl), which only programs signed by TurnOver's own
 // developer may use: before a code review on 18 Oct 2026 it was distributed notifications, which any program could
 // post (and change TurnOver's settings with) or hear (and read them all).
@@ -16,6 +16,8 @@ import AVFoundation
 
 public enum SettingsBridge {
     private static var started = false
+    /// Restart TurnOver (set by the app): CoExist changes need it.
+    public static var restart: (() -> Void)?
 
     /// The control channel up, and the settings' ops on it: "subscribe" (Settings opening: the settings now, and
     /// every change after), "ask" (the settings now), "patch" (a change).
@@ -81,7 +83,7 @@ public enum SettingsBridge {
         dict["_kokoroMode"] = KokoroVoice.mode
         dict["_kokoroVoice"] = KokoroVoice.voice
         dict["_kokoroSpeed"] = KokoroVoice.speed
-        dict["_brailleTables"] = brailleTables
+        dict["_coexist"] = Coexist.wouldBeOn
         dict["_outputDevices"] = SpeechPlayer.outputDevices().map { ["uid": $0.uid, "name": $0.name] }
         dict["_speechPortApps"] = SpeechPort.shared.appDecisions.map { ["id": $0.id, "name": $0.name, "allowed": $0.allowed] }
         dict["_otherLanguages"] = otherLanguagesState()
@@ -91,20 +93,6 @@ public enum SettingsBridge {
         if let reply { reply(["op": "state", "json": s]) } else { ControlServer.shared.broadcast(["op": "state", "json": s]) }
     }
 
-    /// The braille tables, as [identifier, name] pairs: the user's language's first, then every other language's,
-    /// named with the language. Read once (going through every language's tables takes a moment).
-    private static let brailleTables: [[String]] = {
-        // Each table once (one can serve several languages; the picker needs each identifier once), under the first
-        // name met: the user's own language's.
-        var out = TOBrailleTranslatorTables.forUser().map { [$0.id, $0.name] }
-        var seen = Set(out.map { $0[0] })
-        for lang in TOBrailleTranslatorTables.otherLanguages() {
-            for t in lang.tables where seen.insert(t.id).inserted { out.append([t.id, "\(lang.language): \(t.name)"]) }
-        }
-        var first = Set<String>()
-        return out.filter { first.insert($0[0]).inserted }
-    }()
-
     static func apply(_ json: String) {
         guard let data = json.data(using: .utf8), let patch = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         // Outside the file.
@@ -113,6 +101,13 @@ public enum SettingsBridge {
         if let s = patch["_kokoroSpeed"] as? Double { KokoroVoice.speed = min(2, max(0.6, s)) }
         if patch["_restartSteam"] as? Bool == true { Games.restartSteam() }
         if let a = patch["_speechPortAllowed"] as? [String: Any], let id = a["id"] as? String, let on = a["allowed"] as? Bool { SpeechPort.shared.setAllowed(id, on) }
+        if let on = patch["_coexist"] as? Bool, on != Coexist.wouldBeOn {
+            UserDefaults.standard.set(on, forKey: "coexist")
+            Speech.speakMessage(on ? "CoExist on. TurnOver restarts." : "CoExist off. TurnOver restarts.")
+            Log.info("settings app: CoExist \(on ? "on" : "off"); restarting")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { (restart ?? TurnOverMenu.shared.relaunch)?() }
+            return
+        }
         // The file's settings: merged section by section, then read back through Config, so a value of the wrong kind
         // is simply left as it was.
         let filePatch = patch.filter { !$0.key.hasPrefix("_") }
@@ -149,10 +144,6 @@ public enum SettingsBridge {
             let voiceChanged = before.speech.voice != next.speech.voice
             let languageVoicesChanged = before.speech.languageVoices != next.speech.languageVoices
             if voiceChanged || languageVoicesChanged { Languages.forget(); languagesState = nil }
-            // The fork's braille hooks, as the menu's items run them.
-            if before.braille.autoScrollSeconds != next.braille.autoScrollSeconds { Braille.autoScrollIntervalChanged() }
-            if before.braille.blinkRateMs != next.braille.blinkRateMs { Braille.blinkRateChanged() }
-            if next.braille.showMessages == "off", before.braille.showMessages != "off" { Braille.dropHeldMessage(); Braille.refreshSoon() }
             // The key layer where VoiceOver reads follows its own setting too (the style's change starts or stops it above).
             if before.general.keysWhereVoiceOverReads != next.general.keysWhereVoiceOverReads { GlobalCommands.onKeyboardStyleChanged?() }
             Log.info("settings app: \(filePatch.keys.sorted().joined(separator: ", ")) changed")

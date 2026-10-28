@@ -87,7 +87,7 @@ public final class AppStoreView {
         return nil
     }
 
-    nonisolated private static func first(in e: AXUIElement, depth: Int, where test: (AXUIElement) -> Bool) -> AXUIElement? {
+    nonisolated static func first(in e: AXUIElement, depth: Int, where test: (AXUIElement) -> Bool) -> AXUIElement? {
         if test(e) { return e }
         guard depth > 0 else { return nil }
         for c in e.elements(kAXChildrenAttribute) { if let f = first(in: c, depth: depth - 1, where: test) { return f } }
@@ -128,10 +128,86 @@ public final class AppStoreView {
     /// The page, shelf by shelf, a little at a time: the heading's area above the collection (Updates: "Update
     /// All"), then the shelves reached by AXNextContentSibling, until there are enough to start with. The rest is read
     /// as the arrows reach it (reading all 529 items of Discover at once took 5 s and froze TurnOver, 6 Oct 2026).
+    // MARK: The flat view (developer switch `flatView`; docs/FLAT-VIEW-PLAN.md)
+
+    /// The results page's host while a search results page is up; the old page machinery stands down meanwhile.
+    private var results: AppStoreResults?
+    private var resultsKey = ""
+    private var flatDrives: Bool { results != nil || catalogDrives }
+    private var flatOn: Bool { Edition.devDefault("flatView") }
+
+    /// The catalog's answers for the latest search (AppStoreCatalog.swift): the results page's host while the
+    /// Store shows that search's results, instead of the page's own rows.
+    private var catalog: Catalog?
+    private var catalogDrives = false
+    /// The page just asked for by name: its title is not said again when it comes.
+    private var openingTitle = ""
+
+    /// A search is going out: the catalog is asked at the same time, and answers the results page.
+    private func catalogSearch(term raw: String) {
+        guard flatOn else { return }
+        let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { Log.io("app store catalog: no term to search for"); return }
+        catalog?.cancel()
+        resultsEnd()   // the page's own reading stands down: the catalog answers this search
+        let c = Catalog(kind: .apps, term: term, open: { [weak self] app in self?.openCatalogApp(app) },
+                                fallBack: { [weak self] why in
+                                    guard let self else { return }
+                                    if why != "nothing found" { Speech.speakMessage("The catalog did not answer: \(why). Reading the page.") }
+                                    catalog = nil; catalogDrives = false; resultsKey = ""; buildPage()
+                                })
+        catalog = c; catalogDrives = true
+        c.search()
+    }
+    /// A catalog result chosen: the Store opens its page by id, from wherever it is.
+    private func openCatalogApp(_ app: Catalog.Entry) {
+        let before = pageKey
+        catalogDrives = false
+        NSWorkspace.shared.open(app.url)
+        Log.io("app store catalog: opening \"\(Log.words(app.name.prefix(40).description))\"")
+        // Said at once: the Store takes two or three seconds to bring the page, and its first item is said when
+        // the page has been read, so the person hears the start and the end of the wait.
+        Speech.speakMessage("Opening \(app.name)")
+        openingTitle = app.name
+        waitForNewPage(from: before)
+    }
+
+    private func resultsBegin() {
+        if results == nil {
+            results = AppStoreResults(pid: pid) { [weak self] name, point in self?.openResolvedRow(name, at: point) }
+        }
+        guard resultsKey != pageKey else { return }   // the same page read again: the host's own waves go on
+        resultsKey = pageKey
+        Log.io("app store: the results page is the flat view's")
+        results?.start()
+    }
+    private func resultsEnd() {
+        guard let r = results else { return }
+        r.stop(); results = nil; resultsKey = ""
+        Log.io("app store: the flat view hands the page back")
+    }
+    /// A row the host resolved: clicked at the point the system's hit test confirmed, the new page waited for.
+    private func openResolvedRow(_ name: String, at p: CGPoint) {
+        let before = pageKey
+        let home = CGEvent(source: nil)?.location
+        Mouse.click(at: p, button: .left, count: 1)
+        if let home { DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { Mouse.move(to: home) } }
+        Log.io("app store: opened \"\(Log.words(name.prefix(40).description))\" at the point the hit test confirmed")
+        waitForNewPage(from: before)
+    }
+
     public func buildPage() {
         let start = Date()
         page = []; shelves = []
-        guard let (scroll, list) = pageRoot() else { pageKey = ""; return }
+        guard let (scroll, list) = pageRoot() else { pageKey = ""; resultsEnd(); return }
+        if flatOn, list.string(kAXIdentifierAttribute) == "AppStore.search.result" {
+            pageKey = currentKey(); builtTitle = pageTitle
+            if let c = catalog, c.failed == nil { catalogDrives = true; resultsEnd(); return }   // the catalog answers this page
+            resultsBegin()
+            return
+        }
+        catalogDrives = false
+        resultsEnd()
         seen = []
         // Above the collection: the page's heading and its buttons.
         for c in scroll.elements(kAXChildrenAttribute) where c.role == "AXGroup" && !CFEqual(scroll, list) {
@@ -244,7 +320,7 @@ public final class AppStoreView {
     /// another app, the page is read again and the same item found; nil if it cannot be. The looking (scrolling
     /// and waiting, up to two seconds) happens off the main thread, and `then` runs on it (8 Oct 2026).
     private func confirmed(_ i: Int, then: @escaping (Entry?) -> Void) {
-        guard page.indices.contains(i) else { then(nil); return }
+        guard page.indices.contains(i) else { Log.io("app store: nothing at \(i + 1) of \(page.count) to act on"); then(nil); return }
         let e = page[i]
         @Sendable nonisolated func name(_ s: String) -> String { (s.components(separatedBy: ",").first ?? s).trimmingCharacters(in: .whitespaces) }
         let wanted = name(e.check.isEmpty ? e.label : e.check)
@@ -595,9 +671,13 @@ public final class AppStoreView {
     }
 
     private func ensureCurrent() {
-        guard !loading else { return }   // the lists are being written off the main thread
+        guard !loading || flatDrives else { return }   // the lists are being written off the main thread
         if card != nil { area = .page }   // a card over the window: no sidebar to be in
-        if area == .page, page.isEmpty || currentKey() != pageKey { buildPage(); pageIndex = min(pageIndex, max(0, page.count - 1)) }
+        // Under the flat view the list element comes and goes as the Store redraws; the view's own waves keep up, so
+        // a changed key with the same title is no reason to start over (Return emptied the page and did nothing,
+        // 27 Oct 2026).
+        let samePage = flatDrives && pageTitle == builtTitle
+        if area == .page, page.isEmpty || (currentKey() != pageKey && !samePage) { buildPage(); pageIndex = min(pageIndex, max(0, page.count - 1)) }
         if area == .sidebar { buildSidebar(); sideIndex = min(sideIndex, max(0, sidebar.count - 1)) }
     }
 
@@ -674,6 +754,8 @@ public final class AppStoreView {
     // MARK: Moving
 
     public func move(_ d: Int) {
+        if let c = catalog, catalogDrives, area == .page { c.move(d); return }
+        if let r = results, area == .page { r.move(d); return }
         guard !loading else { queued.append { [weak self] in self?.move(d) }; return }
         moves += 1
         ensureCurrent()
@@ -726,6 +808,8 @@ public final class AppStoreView {
     }
 
     public func toEnd(_ last: Bool) {
+        if let c = catalog, catalogDrives, area == .page { c.toEnd(last); return }
+        if let r = results, area == .page { r.toEnd(last); return }
         moves += 1
         ensureCurrent()
         if area == .sidebar { sideIndex = last ? sidebar.count - 1 : 0; speak(sideIndex, crossing: false); return }
@@ -752,6 +836,8 @@ public final class AppStoreView {
     private var queued: [() -> Void] = []
 
     public func letter(_ ch: Character) {
+        if let c = catalog, catalogDrives, area == .page { c.letter(ch); return }
+        if let r = results, area == .page { r.letter(ch); return }
         // While shelves are being read off the main thread, their lists are being written: wait, as the arrows do
         // (a code review, 14 Oct 2026).
         guard !loading else { queued.append { [weak self] in self?.letter(ch) }; return }
@@ -800,9 +886,12 @@ public final class AppStoreView {
 
     public func open() {
         // While shelves are being read off the main thread, their lists are being written: wait, as the arrows do
-        // (a code review, 14 Oct 2026).
-        guard !loading else { queued.append { [weak self] in self?.open() }; return }
+        // (a code review, 14 Oct 2026). Not under the flat view, which has its own waits: a stale `loading` left
+        // Return queued for good (27 Oct 2026).
+        guard !loading || flatDrives else { queued.append { [weak self] in self?.open() }; return }
         ensureCurrent()
+        if let c = catalog, catalogDrives, area == .page { c.openCurrent(); return }
+        if let r = results, area == .page { r.open(); return }
         if area == .sidebar {
             guard sidebar.indices.contains(sideIndex) else { return }
             let e = sidebar[sideIndex]
@@ -881,8 +970,10 @@ public final class AppStoreView {
         // What is really under the point, asked of the system: the item itself (or a part of it), and never an
         // offer button. An item's reported position can be stale; a click meant for Puzzle once landed on a Get
         // button and brought up Touch ID to install (7 Oct 2026).
+        // Under the flat view the engine has just had the hit test agree, patiently; the check here answers blank
+        // while the Store is busy and would refuse a row it has confirmed.
         guard let p = candidates.first(where: { c in
-            !(offer?.insetBy(dx: -6, dy: -6).contains(c) ?? false) && area.insetBy(dx: 2, dy: 2).contains(c) && hitIsSafe(c, for: e)
+            !(offer?.insetBy(dx: -6, dy: -6).contains(c) ?? false) && area.insetBy(dx: 2, dy: 2).contains(c) && (flatDrives || hitIsSafe(c, for: e))
         }) else { Log.io("app store: no safe point on the item to click (area \(area))"); return false }
         let home = CGEvent(source: nil)?.location
         Mouse.click(at: p, button: .left, count: 1)
@@ -1039,10 +1130,11 @@ public final class AppStoreView {
     }
 
     /// After Return in the search field: wait for the results, read them, and give the keys back to the page.
-    public func afterSearch() {
+    public func afterSearch(term: String = "") {
         let before = currentKey()
         area = .page
         searching = true
+        catalogSearch(term: term)
         waitForNewPage(from: before, thenFocusPage: true)
     }
     /// A search is under way: the results are read when they come, whatever keys are pressed meanwhile.
@@ -1080,8 +1172,16 @@ public final class AppStoreView {
             // The same search again leaves the same page: after a moment, read it all the same.
             let limit = thenFocusPage ? 20 : 16
             if (now == before || now.isEmpty) && tries < limit { self.waitForNewPage(from: before, back: back, thenFocusPage: thenFocusPage, tries: tries + 1, moves: start); return }
+            let fromSearch = self.searching
             self.area = .page
             self.searching = false
+            // A new search gives the same list element and title ("Results for …"): the flat view starts over.
+            if fromSearch { self.resultsKey = "" }
+            // The title first: reading a product page right after it loads takes the Store two seconds (41 items in
+            // 1.8 s, 27 Oct 2026), and the person needn't wait for that to hear where they are.
+            let early = self.pageTitle
+            let announced = self.openingTitle; self.openingTitle = ""
+            if now != before, !early.isEmpty, !self.flatDrives, early != announced { Speech.speakMessage(early) }
             self.buildPage()
             // Keys pressed while waiting were on the old page: the new page starts at its top (or where it was left).
             self.pageIndex = back ? min(self.lastPositions[self.pageTitle] ?? 0, max(0, self.page.count - 1)) : 0
@@ -1094,8 +1194,8 @@ public final class AppStoreView {
             if thenFocusPage, let (_, list) = self.pageRoot() { _ = list.set(kAXFocusedAttribute, kCFBooleanTrue) }
             let title = self.pageTitle
             if now == before, !thenFocusPage { Log.io("app store: the page did not change"); return }
-            Speech.speakMessage(title.isEmpty ? "page" : title)
-            if !self.page.isEmpty { self.speak(self.pageIndex, crossing: true) }
+            if (title != early || early.isEmpty) && title != announced { Speech.speakMessage(title.isEmpty ? "page" : title) }
+            if !self.page.isEmpty, !self.flatDrives { self.speak(self.pageIndex, crossing: true) }   // the flat view says its first row itself
         }
     }
 }

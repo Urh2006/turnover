@@ -2,10 +2,13 @@
 
 The newest build is first. "Reported by a tester" marks a fix for something a tester sent in. Thank you.
 
-## 2.0, build 22.4
+## 2.0, build 23
+
+Features wait for a whole build; point releases carry fixes only (27 Oct 2026).
 
 ### Changed
 
+- Braille: panning to another line moves the caret there, so the arrows carry on from the line read. The Braille section of Settings offers Line by line (the default), To the text shown, or Off. Tethered to review, panning moves only the review cursor.
 - Braille: Apple USB and HID drivers are polled and written on the braille thread, as Bluetooth drivers are, so a
   display does not hold up speech. Reads and writes cannot enter each other while a driver waits, the latest
   pending frame is kept, and handing back to VoiceOver waits for the driver to unload.
@@ -19,12 +22,22 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
   "For" chooses the list for everywhere or for the app last in front, so Mail can say a message's subject before its
   sender while everything else stays as it was. The three old switches (help text, shortcut, position) are rows of the
   list now; a settings file from before keeps their values.
+
+## 2.0, build 22.4
+
+### Fixed
+
 - App Store: Return on a search result opens it. The results page's container reports no size, so every row counted
   as off screen and Return said "could not reach … try again" for an app plainly on screen; the page's list, or the
   window, now gives the area, and a page with no scroll bar asks the row to scroll into view. Search results that
   arrive in stages (11, then 24, then 36 for "water") are read again as they settle, the place kept by name, and the
   Store's own hit test, which lags a new results page, is given up to a second to agree before the icon is clicked.
   Reported by the maintainer (Keynote, from a search for Pages; then the water apps).
+
+### Fixed
+
+- VO-Left and VO-Right can move past segmented controls, such as the buttons in a SwiftUI picker, without getting
+  trapped between their segments.
 
 ## 2.0, build 22.3
 
@@ -144,9 +157,6 @@ The newest build is first. "Reported by a tester" marks a fix for something a te
 - With NVDA or JAWS keys, the layer that makes Caps Lock the NVDA key where VoiceOver reads can be turned off: Settings,
   Keyboard, "NVDA and JAWS keys where VoiceOver reads too" (on, as before). Off, VoiceOver's own Caps Lock keys
   (VO-F7, VO-F8, VO-M) work in the apps VoiceOver reads. The old setting for it was never read.
-- VoiceOver is no longer left silent while macOS asks for permission to record audio (after TurnOver is re-signed or
-  reinstalled): it reads the question out, and TurnOver taking over or quitting while it is open gives VoiceOver back
-  at once instead of after 90 seconds.
 - The speech settings are TurnOver's own again: the rate, volume and pitch keys change TurnOver's voice only, and
   TurnOver no longer reads VoiceOver's rate when it takes over. The link between the two readers' settings wasn't
   reliable.

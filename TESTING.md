@@ -14,7 +14,10 @@ with no application behind them), FixtureTests.swift (objects and views against 
 tests on a generated 1,000-row window with call budgets), PolicyTests.swift (the decisions that can leave a blind
 user with no reader: who leads, what the speech queue drops, the VoiceOver Activity's archive against a real export;
 and every recorded fixture read within a budget), GamesTests.swift (the Steam helper's
-line protocol) and PluginTests.swift (the parked plugin format, still tested so it does not rot).
+line protocol), PluginTests.swift (the parked plugin format, still tested so it does not rot), and
+PluginArchiveTests.swift (real ZIPs: entry and expansion limits, misleading size fields, corrupt data, encryption,
+outside-file sentinels for malicious paths and links, and cleanup). `turnover-tests archive:` runs the archive
+checks without installing a plugin.
 
 ## Braille driver thread (every build)
 
@@ -83,8 +86,8 @@ live copy is `~/Library/Developer/TurnOver/scenarios/regression/run.sh`; the too
 `~/Library/Developer/TurnOver/tools` from `Tools/drivers`.
 
 Preconditions: the build under test installed as /Applications/TurnOver.app; its welcome closed (the runner refuses
-otherwise); the Mac idle for five minutes at the start (then 90 s before each part); the display awake; TurnOver on and
-reading, VoiceOver off (one reader at a time since CoExist went, 24 Oct 2026). The runner turns the `logSpeech` default on for the run (the
+otherwise); the Mac idle for five minutes at the start (then 90 s before each part); the display awake; VoiceOver on
+with the Activity in (coexist is the product). The runner turns the `logSpeech` default on for the run (the
 scenarios read what was said from the log, which keeps lengths otherwise) and puts it back, quits every app it
 opened, and restores the front app on exit, however it ends.
 
